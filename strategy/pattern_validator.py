@@ -3,6 +3,8 @@ import config.strategy_config as strategy_config
 class PatternValidator:
     def __init__(self):
         self.min_volume_map = strategy_config.MIN_BREAKOUT_VOLUME
+        self.conviction_ratio_map = strategy_config.CONVICTION_CANDLE_BODY_RATIO
+        self.ema_tolerance = strategy_config.EMA_BIAS_TOLERANCE_PERCENT
 
     def validate_signal(self, signal, context):
         """
@@ -28,12 +30,17 @@ class PatternValidator:
             print(f"Validation FAILED ({symbol}): 200 EMA not available.")
             return False
 
-        if signal_direction == 'BUY' and current_price < ema_200:
-            print(f"Validation FAILED ({symbol}): BUY signal is below 200 EMA ({current_price:.2f} < {ema_200:.2f}). Bias is BEARISH.")
+        # Calculate tolerance band
+        tolerance_amount = ema_200 * self.ema_tolerance
+        upper_band = ema_200 + tolerance_amount
+        lower_band = ema_200 - tolerance_amount
+
+        if signal_direction == 'BUY' and current_price < lower_band:
+            print(f"Validation FAILED ({symbol}): BUY signal is below 200 EMA tolerance band ({current_price:.2f} < {lower_band:.2f}). Bias is BEARISH.")
             return False
         
-        if signal_direction == 'SELL' and current_price > ema_200:
-            print(f"Validation FAILED ({symbol}): SELL signal is above 200 EMA ({current_price:.2f} > {ema_200:.2f}). Bias is BULLISH.")
+        if signal_direction == 'SELL' and current_price > upper_band:
+            print(f"Validation FAILED ({symbol}): SELL signal is above 200 EMA tolerance band ({current_price:.2f} > {upper_band:.2f}). Bias is BULLISH.")
             return False
         
         print(f"- Validation PASSED ({symbol}): Signal direction ({signal_direction}) aligns with 200 EMA bias.")
@@ -45,33 +52,22 @@ class PatternValidator:
             return False
         print(f"- Validation PASSED ({symbol}): Breakout volume is sufficient.")
         
-        # 3. Candlestick Pattern Check: Validate for high-quality rejection patterns (Hammer/Shooting Star).
-        rej_open = rejection_candle['open']
-        rej_close = rejection_candle['close']
-        rej_high = rejection_candle['high']
-        rej_low = rejection_candle['low']
+        # 3. Candlestick Pattern Check
+        # The candle being checked is the one that triggers the trade (the confirmation candle)
+        entry_candle = latest_bar
 
-        body_size = abs(rej_open - rej_close)
-        # Handle Doji case where body is zero to avoid division by zero errors.
-        if body_size < 0.01: 
-            body_size = 0.01
-
-        upper_wick = rej_high - max(rej_open, rej_close)
-        lower_wick = min(rej_open, rej_close) - rej_low
-
+        # If the signal is already confirmed, we can relax the pattern rules.
+        # The primary check is just that the entry candle moves in the right direction.
         if signal_direction == 'BUY':
-            # Must be a bullish Hammer: long lower wick, small upper wick, bullish close.
-            is_valid_hammer = (lower_wick >= 2 * body_size) and (upper_wick < body_size) and (rej_close > rej_open)
-            if not is_valid_hammer:
-                print(f"Validation FAILED ({symbol}): Rejection candle is not a valid bullish Hammer pattern.")
+            if entry_candle['close'] <= entry_candle['open']:
+                print(f"Validation FAILED ({symbol}): Post-confirmation entry candle was not bullish.")
                 return False
+            print(f"- Validation PASSED ({symbol}): Post-confirmation entry candle is bullish.")
 
         elif signal_direction == 'SELL':
-            # Must be a bearish Shooting Star: long upper wick, small lower wick, bearish close.
-            is_valid_shooting_star = (upper_wick >= 2 * body_size) and (lower_wick < body_size) and (rej_close < rej_open)
-            if not is_valid_shooting_star:
-                print(f"Validation FAILED ({symbol}): Rejection candle is not a valid bearish Shooting Star pattern.")
+            if entry_candle['close'] >= entry_candle['open']:
+                print(f"Validation FAILED ({symbol}): Post-confirmation entry candle was not bearish.")
                 return False
+            print(f"- Validation PASSED ({symbol}): Post-confirmation entry candle is bearish.")
 
-        print(f"- Validation PASSED ({symbol}): Rejection candle is a high-quality pattern.")
         return True

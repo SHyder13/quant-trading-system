@@ -28,10 +28,12 @@ class RetestDetector:
         is_rejection_candle = False
 
         if break_direction == 'up':
-            wick_touched_static_level = latest_bar['low'] <= retest_zone_upper
+            # Price broke ABOVE resistance – acceptable retest if the LOW of rejection candle touches level within tolerance band
+            wick_touched_static_level = (latest_bar['low'] <= retest_zone_upper) and (latest_bar['low'] >= retest_zone_lower)
             is_rejection_candle = latest_bar['close'] >= candle_midpoint
         elif break_direction == 'down':
-            wick_touched_static_level = latest_bar['high'] >= retest_zone_lower
+            # Price broke BELOW support – acceptable retest if the HIGH of rejection candle touches level within tolerance band
+            wick_touched_static_level = (latest_bar['high'] >= retest_zone_lower) and (latest_bar['high'] <= retest_zone_upper)
             is_rejection_candle = latest_bar['close'] <= candle_midpoint
 
         if wick_touched_static_level and is_rejection_candle:

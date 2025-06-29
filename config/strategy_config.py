@@ -6,7 +6,7 @@
 TRADABLE_SYMBOLS = ['MNQ', 'MES']
 
 # The number of consecutive candle closes required to confirm a breakout.
-BREAK_CONFIRMATION_CANDLES = 1
+BREAK_CONFIRMATION_CANDLES = 2
 
 # Defines how close the price must get to a broken level to be considered a valid retest.
 # This value is in points.
@@ -18,8 +18,15 @@ RETEST_TOLERANCE_POINTS = {
 # The minimum volume required on a breakout candle for a signal to be considered valid.
 # This is now a dictionary to support different thresholds per symbol.
 MIN_BREAKOUT_VOLUME = {
-    'MNQ': 100,  # Corresponds to NQ
-    'MES': 50,   # Corresponds to ES
+    'MNQ': 80,  # Corresponds to NQ
+    'MES': 20,   # Corresponds to ES
+}
+
+# Defines the minimum required ratio of the candle's body to its total range (high-low)
+# for it to be considered a 'Conviction Candle'. A higher value means a more decisive candle.
+CONVICTION_CANDLE_BODY_RATIO = {
+    'MNQ': 0.7,  # Requires a strong 70% body
+    'MES': 0.6,  # Slightly more lenient for MES
 }
 
 # The number of minutes to wait for a retest before invalidating the setup.
@@ -32,6 +39,13 @@ ALLOW_EMA_DIP_BUYS = True
 # If True, requires the 13, 48, and 200 EMAs to be perfectly stacked in the direction of the
 # trend before a 13 EMA dip buy signal can be considered valid.
 REQUIRE_EMA_STACK_FOR_DIP_BUYS = True
+
+# --- Trend Filtering ---
+
+# Defines a tolerance band (as a percentage) around the 200 EMA. A trade can be taken
+# if the price is within this percentage of the 200 EMA, even if it's on the 'wrong' side.
+# For example, a value of 0.001 means a 0.1% tolerance.
+EMA_BIAS_TOLERANCE_PERCENT = 0.001
 
 # The number of seconds to wait between each main loop cycle.
 LOOP_INTERVAL_SECONDS = 60
