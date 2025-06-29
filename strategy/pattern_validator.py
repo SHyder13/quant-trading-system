@@ -45,19 +45,33 @@ class PatternValidator:
             return False
         print(f"- Validation PASSED ({symbol}): Breakout volume is sufficient.")
         
-        # 3. Candlestick Pattern Check: Validate rejection candle shows momentum.
+        # 3. Candlestick Pattern Check: Validate for high-quality rejection patterns (Hammer/Shooting Star).
         rej_open = rejection_candle['open']
         rej_close = rejection_candle['close']
+        rej_high = rejection_candle['high']
+        rej_low = rejection_candle['low']
+
+        body_size = abs(rej_open - rej_close)
+        # Handle Doji case where body is zero to avoid division by zero errors.
+        if body_size < 0.01: 
+            body_size = 0.01
+
+        upper_wick = rej_high - max(rej_open, rej_close)
+        lower_wick = min(rej_open, rej_close) - rej_low
 
         if signal_direction == 'BUY':
-            if rej_close <= rej_open:
-                print(f"Validation FAILED ({symbol}): Rejection candle did not close bullish.")
+            # Must be a bullish Hammer: long lower wick, small upper wick, bullish close.
+            is_valid_hammer = (lower_wick >= 2 * body_size) and (upper_wick < body_size) and (rej_close > rej_open)
+            if not is_valid_hammer:
+                print(f"Validation FAILED ({symbol}): Rejection candle is not a valid bullish Hammer pattern.")
                 return False
 
         elif signal_direction == 'SELL':
-            if rej_close >= rej_open:
-                print(f"Validation FAILED ({symbol}): Rejection candle did not close bearish.")
+            # Must be a bearish Shooting Star: long upper wick, small lower wick, bearish close.
+            is_valid_shooting_star = (upper_wick >= 2 * body_size) and (lower_wick < body_size) and (rej_close < rej_open)
+            if not is_valid_shooting_star:
+                print(f"Validation FAILED ({symbol}): Rejection candle is not a valid bearish Shooting Star pattern.")
                 return False
 
-        print(f"- Validation PASSED ({symbol}): Rejection candle shows momentum.")
+        print(f"- Validation PASSED ({symbol}): Rejection candle is a high-quality pattern.")
         return True

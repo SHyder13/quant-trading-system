@@ -64,6 +64,7 @@ class Backtester:
                 'stop_loss_manager': StopLossManager(risk_config),
                 'active_trade': None,
                 'levels': {},
+                'timed_out_levels': set(), # New: for cooldown logic
             }
 
         self.trades = []
@@ -123,6 +124,7 @@ class Backtester:
             # Reset strategy state at the start of each day
             self.symbol_states[symbol]['signal_generator'].reset()
             self.symbol_states[symbol]['active_trade'] = None
+            self.symbol_states[symbol]['timed_out_levels'].clear() # Reset timed-out levels for the new day
 
         if not daily_data_frames:
             print("No data for any symbol on this day.")
@@ -153,9 +155,44 @@ class Backtester:
                 if not (is_morning_session or is_afternoon_session):
                     continue # Skip signal processing if outside trading hours
 
+                # --- Dynamic Level Selection ---
+                # On each bar, determine the most relevant levels to watch for a break.
+                all_levels = state.get('levels', {})
+                # Exclude levels that have timed out for the day
+                all_levels = {name: price for name, price in all_levels.items() if price not in state['timed_out_levels']}
+                current_price = latest_bar['close']
+
+                support_levels = {name: price for name, price in all_levels.items() if price < current_price}
+                resistance_levels = {name: price for name, price in all_levels.items() if price > current_price}
+
+                closest_support = max(support_levels.values()) if support_levels else None
+                closest_resistance = min(resistance_levels.values()) if resistance_levels else None
+
+                active_levels = {}
+                if closest_support:
+                    support_name = [name for name, price in all_levels.items() if price == closest_support][0]
+                    active_levels[support_name] = closest_support
+                if closest_resistance:
+                    resistance_name = [name for name, price in all_levels.items() if price == closest_resistance][0]
+                    active_levels[resistance_name] = closest_resistance
+                
+                if not active_levels:
+                    continue # No actionable levels near the current price
+                else:
+                    print(f"    - [{timestamp.time()}] {symbol} | Price: {current_price:.2f} | Watching: {active_levels}")
+
+                # Pass only the most relevant levels to the signal generator
                 signal_info, pivot_candle, rejection_candle, breakout_candle, confluence_type = state['signal_generator'].process_bar(
-                    latest_bar, state['levels'], latest_emas
+                    latest_bar, active_levels, latest_emas
                 )
+
+                # --- Handle Cooldown from Timeouts ---
+                if signal_info.get('side') == 'RETEST_TIMEOUT':
+                    timed_out_level = signal_info.get('timed_out_level')
+                    if timed_out_level:
+                        print(f"Cooldown engaged for level {timed_out_level} on {symbol} for the rest of the day.")
+                        state['timed_out_levels'].add(timed_out_level)
+                    continue # Move to the next bar
 
                 # If a signal is generated, proceed with validation and trade execution
                 if signal_info['side'] != 'NONE':
@@ -200,7 +237,7 @@ class Backtester:
                         'side': signal_info['side'], 'stop_loss': stop_loss_price, 'take_profit': take_profit_price,
                         'quantity': quantity, 'status': 'OPEN'
                     }
-                    print(f"  -> [{timestamp.time()}] {symbol} TRADE OPEN: {signal_info['side']} {quantity} @ {entry_price:.2f}")
+                    print(f"  -> [{timestamp.time()}] {symbol} TRADE OPEN: {signal_info['side']} {quantity} @ {entry_price:.2f} | SL: {stop_loss_price:.2f} | TP: {take_profit_price:.2f}")
 
             # If in a trade, check for exit conditions
             else:

@@ -37,20 +37,28 @@ class LevelCalculator:
         if current_simulation_date.tz is None:
             current_simulation_date = current_simulation_date.tz_localize('UTC')
         simulation_date_et = current_simulation_date.tz_convert(et_tz).normalize()
-        previous_trading_day_date = simulation_date_et - pd.tseries.offsets.BDay(1)
+
+        # --- Find the True Previous Trading Day ---
+        # Get all unique dates in the dataset that are before the simulation date
+        available_past_dates = sorted([d for d in intraday_data_et.index.date if d < simulation_date_et.date()], reverse=True)
+        
+        previous_trading_day_date = None
+        if available_past_dates:
+            previous_trading_day_date = available_past_dates[0]
 
         # --- Calculate PDH/PDL from Previous Day's RTH ---
-        previous_day_data = intraday_data_et[intraday_data_et.index.date == previous_trading_day_date.date()]
-        if not previous_day_data.empty:
-            rth_data = previous_day_data.between_time('09:30', '16:00')
-            if not rth_data.empty:
-                levels['pdh'] = rth_data['high'].max()
-                levels['pdl'] = rth_data['low'].min()
-                print(f"Calculated RTH PDH/PDL from {previous_trading_day_date.date()}: PDH={levels.get('pdh', 0):.2f}, PDL={levels.get('pdl', 0):.2f}")
-            else:
-                print(f"Warning: No data found in RTH (09:30-16:00 ET) for {previous_trading_day_date.date()}.")
+        if previous_trading_day_date:
+            previous_day_data = intraday_data_et[intraday_data_et.index.date == previous_trading_day_date]
+            if not previous_day_data.empty:
+                rth_data = previous_day_data.between_time('09:30', '16:00')
+                if not rth_data.empty:
+                    levels['pdh'] = rth_data['high'].max()
+                    levels['pdl'] = rth_data['low'].min()
+                    print(f"Calculated RTH PDH/PDL from {previous_trading_day_date}: PDH={levels.get('pdh', 0):.2f}, PDL={levels.get('pdl', 0):.2f}")
+                else:
+                    print(f"Warning: No data found in RTH (09:30-16:00 ET) for {previous_trading_day_date}.")
         else:
-            print(f"Warning: No data found for the previous trading day ({previous_trading_day_date.date()}).")
+            print(f"Warning: No previous trading day found in the dataset before {simulation_date_et.date()}.")
 
         # --- Calculate PMH/PML from Current Day's Premarket ---
         current_day_data = intraday_data_et[intraday_data_et.index.date == simulation_date_et.date()]

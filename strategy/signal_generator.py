@@ -31,9 +31,11 @@ class SignalGenerator:
         if self.active_break_info:
             # Check for timeout first
             if bar.name > self.active_break_info['breakout_time'] + self.timeout:
-                print(f"[{bar.name}] Retest timed out after {self.timeout}. Resetting.")
+                timed_out_level = self.active_break_info['broken_level']
+                print(f"[{bar.name}] Retest of level {timed_out_level} timed out after {self.timeout}. Resetting.")
                 self.reset()
-                return {'side': 'NONE'}, None, None, None, None
+                # Return a special signal to indicate a timeout for a specific level
+                return {'side': 'RETEST_TIMEOUT', 'timed_out_level': timed_out_level}, None, None, None, None
 
             # Determine the direction of the break to check for the correct retest.
             break_direction = 'up' if self.active_break_info['break_event'] == 'up' else 'down'

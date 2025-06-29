@@ -25,6 +25,14 @@ MIN_BREAKOUT_VOLUME = {
 # The number of minutes to wait for a retest before invalidating the setup.
 RETEST_TIMEOUT_MINUTES = 60
 
+# If True, allows the bot to take trades that retest the 13 EMA as dynamic support/resistance,
+# even if the price does not pull back to the original broken static level.
+ALLOW_EMA_DIP_BUYS = True
+
+# If True, requires the 13, 48, and 200 EMAs to be perfectly stacked in the direction of the
+# trend before a 13 EMA dip buy signal can be considered valid.
+REQUIRE_EMA_STACK_FOR_DIP_BUYS = True
+
 # The number of seconds to wait between each main loop cycle.
 LOOP_INTERVAL_SECONDS = 60
 
