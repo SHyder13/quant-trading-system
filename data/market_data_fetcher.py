@@ -79,6 +79,7 @@ class MarketDataFetcher:
         start_date = datetime.fromisoformat(start_date_str.replace('Z', '+00:00'))
         end_date = datetime.fromisoformat(end_date_str.replace('Z', '+00:00'))
 
+        print(f"DEBUG: fetch_historical_data received start_date: {start_date}")
         contract_id = self._get_contract_id(symbol, start_date)
         if not contract_id:
             return None
@@ -108,6 +109,7 @@ class MarketDataFetcher:
                 "limit": 5000,  # Add a generous limit, pagination is handled by the date range
                 "includePartialBar": False
             }
+            print(f"DEBUG: Fetching chunk with payload: {payload}")
 
             try:
                 response = self.session.post(f"{self.base_url}/History/retrieveBars", json=payload)
@@ -143,43 +145,37 @@ class MarketDataFetcher:
         return all_bars_df
 
     def _get_contract_id(self, symbol, historical_date=None):
-        """Helper to search for a contract ID by its symbol, aware of the historical date."""
+        """
+        Helper to get a contract ID by searching for the active contract.
+        It uses a mapping to find the correct root symbol (e.g., MES -> EP).
+        """
+        # Map friendly symbol to the root symbol used in contract IDs
+        symbol_map = {
+            'MNQ': 'NQ',
+            'MES': 'EP'
+        }
+        search_symbol = symbol_map.get(symbol, symbol)
+
+        print(f"Searching for active contract for '{symbol}' (using search term '{search_symbol}')...")
         endpoint = f"{self.base_url}/Contract/search"
-        payload = {"live": False, "searchText": symbol}
+        payload = {"live": False, "searchText": search_symbol}
+        
         try:
             response = self.session.post(endpoint, json=payload)
             response.raise_for_status()
             data = response.json()
+
             if data and data.get('success') and data.get('contracts'):
-                # If a historical date is provided, find the contract that was active at that time.
-                if historical_date:
-                    for contract in data['contracts']:
-                        # Example description: "E-mini S&P 500 Futures, Jun 2025"
-                        description = contract.get('description', '')
-                        try:
-                            # Extract month and year from the description
-                            parts = description.split(',')
-                            if len(parts) > 1:
-                                date_part = parts[1].strip()
-                                contract_month_year = datetime.strptime(date_part, '%b %Y')
-                                
-                                # A simple rule: if the historical date is before the contract's month, it's a candidate.
-                                # This isn't perfect for all futures, but it's a good start for typical quarterly contracts.
-                                if historical_date.year == contract_month_year.year and historical_date.month <= contract_month_year.month:
-                                    print(f"Found historically relevant contract: {description} for date {historical_date.date()}")
-                                    return contract['id']
-                        except ValueError:
-                            continue # Ignore contracts with non-standard date formats
-
-                # Fallback for live trading or if historical search fails: find the currently active contract.
-        
+                # Find the contract marked as active for the specific symbol (e.g., MNQ)
                 for contract in data['contracts']:
-                    if contract.get('activeContract'):
+                    # The search for 'NQ' might return 'ENQ' and 'MNQ', so we need to be specific.
+                    if contract.get('activeContract') and symbol in contract.get('name', ''):
+                        print(f"Found active contract: {contract.get('description')} with ID: {contract['id']}")
                         return contract['id']
-
-                # If no active contract is found, fall back to the first in the list as a last resort.
+                
+                # Fallback if the specific symbol isn't found but we got contracts back
                 if data.get('contracts'):
-                    print(f"Warning: No active contract found for {symbol}. Falling back to the first in the list.")
+                    print(f"Warning: No specific active contract found for {symbol}. Falling back to the first in the list.")
                     return data['contracts'][0]['id']
 
             print(f"Could not find any contract for {symbol} in response: {data}")

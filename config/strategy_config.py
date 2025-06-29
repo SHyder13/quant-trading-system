@@ -23,7 +23,7 @@ MIN_BREAKOUT_VOLUME = {
 }
 
 # The number of minutes to wait for a retest before invalidating the setup.
-RETEST_TIMEOUT_MINUTES = 15
+RETEST_TIMEOUT_MINUTES = 60
 
 # The number of seconds to wait between each main loop cycle.
 LOOP_INTERVAL_SECONDS = 60

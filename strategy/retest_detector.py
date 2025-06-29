@@ -7,76 +7,64 @@ class RetestDetector:
         self.ema_confluence_tolerance_48 = self.strategy_config.EMA_CONFLUENCE_TOLERANCE_POINTS_48.get(self.symbol)
         if self.tolerance is None or self.ema_confluence_tolerance_13 is None or self.ema_confluence_tolerance_48 is None:
             raise ValueError(f"Tolerances not fully configured for symbol: {self.symbol}")
+        # The detector is now stateless, so reset does nothing but is kept for compatibility.
         self.reset()
 
     def check_for_retest(self, latest_bar, broken_level_price, break_direction, latest_emas):
         """
-        Checks for a confirmed retest using a two-stage process.
-        Returns a tuple of (pivot_candle, rejection_candle, confluence_type) on success, otherwise None.
+        Checks for a single-candle retest and rejection.
+        A valid retest candle touches the broken level and closes in the direction of the trade.
+        EMA confluence is checked but not required for a signal.
+        Returns a tuple of (pivot_candle, rejection_candle, confluence_type) on success.
         """
         if broken_level_price is None or latest_bar is None:
             return None, None, None
 
-        # Stage 1: Wait for a candle to touch the broken level with EMA confluence.
-        if self.state == 'AWAITING_TOUCH':
+        retest_zone_upper = broken_level_price + self.tolerance
+        retest_zone_lower = broken_level_price - self.tolerance
+
+        wick_touched_zone = False
+        is_rejection_candle = False
+
+        # A more robust definition of a rejection candle based on its closing price within its range.
+        candle_midpoint = (latest_bar['high'] + latest_bar['low']) / 2
+
+        if break_direction == 'up':
+            # For a buy, the wick must touch the support level.
+            wick_touched_zone = latest_bar['low'] <= retest_zone_upper
+            # The candle must close in the upper half of its range, showing rejection of lower prices.
+            is_rejection_candle = latest_bar['close'] >= candle_midpoint
+        elif break_direction == 'down':
+            # For a sell, the wick must touch the resistance level.
+            wick_touched_zone = latest_bar['high'] >= retest_zone_lower
+            # The candle must close in the lower half of its range, showing rejection of higher prices.
+            is_rejection_candle = latest_bar['close'] <= candle_midpoint
+
+        if wick_touched_zone and is_rejection_candle:
+            # This candle is our signal. It acts as both pivot and rejection.
+            # Now, check for confluence as a bonus.
             ema_13 = latest_emas.get('ema_13')
             ema_48 = latest_emas.get('ema_48')
-            if not ema_13 or not ema_48:
-                return None, None, None # Not enough data for EMAs yet
-
-            # Check for touch of the key level
-            is_touching_level = False
-            if break_direction == 'up' and latest_bar['low'] <= broken_level_price + self.tolerance:
-                is_touching_level = True
-            elif break_direction == 'down' and latest_bar['high'] >= broken_level_price - self.tolerance:
-                is_touching_level = True
-
-            if not is_touching_level:
-                return None, None, None
-
-            # Check for confluence with either the 13 or 48 EMA
-            is_near_ema_13 = abs(latest_bar['low'] - ema_13) <= self.ema_confluence_tolerance_13 or \
-                             abs(latest_bar['high'] - ema_13) <= self.ema_confluence_tolerance_13
-            
-            is_near_ema_48 = abs(latest_bar['low'] - ema_48) <= self.ema_confluence_tolerance_48 or \
-                             abs(latest_bar['high'] - ema_48) <= self.ema_confluence_tolerance_48
-
             confluence_type = None
-            if is_near_ema_13:
+
+            if break_direction == 'up' and ema_13 and abs(latest_bar['low'] - ema_13) <= self.ema_confluence_tolerance_13:
                 confluence_type = '13_EMA'
-            elif is_near_ema_48:
+            elif break_direction == 'up' and ema_48 and abs(latest_bar['low'] - ema_48) <= self.ema_confluence_tolerance_48:
+                confluence_type = '48_EMA'
+            elif break_direction == 'down' and ema_13 and abs(latest_bar['high'] - ema_13) <= self.ema_confluence_tolerance_13:
+                confluence_type = '13_EMA'
+            elif break_direction == 'down' and ema_48 and abs(latest_bar['high'] - ema_48) <= self.ema_confluence_tolerance_48:
                 confluence_type = '48_EMA'
 
-            if confluence_type:
-                print(f"RetestDetector: Pivot candle detected with {confluence_type} confluence. Awaiting rejection.")
-                self.pivot_candle = latest_bar
-                self.confluence_type = confluence_type
-                self.state = 'AWAITING_REJECTION'
-            
-            return None, None, None
-
-        # Stage 2: Wait for the next candle to confirm rejection.
-        if self.state == 'AWAITING_REJECTION':
-            rejection_confirmed = False
-            current_price = latest_bar['close']
-
-            if break_direction == 'up' and current_price > broken_level_price:
-                rejection_confirmed = True
-            elif break_direction == 'down' and current_price < broken_level_price:
-                rejection_confirmed = True
-
-            if rejection_confirmed:
-                print(f"*** RETEST CONFIRMED by candle closing at {current_price:.2f} ***")
-                confirmed_pivot_candle = self.pivot_candle
-                rejection_candle = latest_bar
-                confirmed_confluence = self.confluence_type
-                self.reset()
-                return confirmed_pivot_candle, rejection_candle, confirmed_confluence
+            # The stop loss will be based on this single candle.
+            # We return it as both pivot and rejection for compatibility with the backtester.
+            return latest_bar, latest_bar, confluence_type
 
         return None, None, None
 
     def reset(self):
-        """Resets the retest detector's state machine."""
-        self.state = 'AWAITING_TOUCH'
-        self.pivot_candle = None
-        self.confluence_type = None
+        """
+        Resets the detector's state. As the detector is now stateless, this method
+        is kept for compatibility but has no internal effect.
+        """
+        pass # No state to reset

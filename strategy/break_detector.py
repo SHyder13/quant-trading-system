@@ -1,7 +1,8 @@
 class BreakDetector:
-    def __init__(self, strategy_config, symbol):
+    def __init__(self, strategy_config, symbol, logger=None):
         self.strategy_config = strategy_config
         self.symbol = symbol
+        self.logger = logger
         self.confirmation_candles = strategy_config.BREAK_CONFIRMATION_CANDLES
         self.ema_confluence_tolerance = self.strategy_config.EMA_CONFLUENCE_TOLERANCE_POINTS.get(self.symbol)
         if self.ema_confluence_tolerance is None:
@@ -20,62 +21,62 @@ class BreakDetector:
         return self.last_pivot_candle
 
     def check_for_break(self, latest_bar, levels, latest_emas, session_ema_period=13):
-        """Checks for a break, prioritizing an EMA-supported confluence break."""
-        if latest_bar is None or self.previous_bar is None:
-            self.previous_bar = latest_bar
-            self.previous_emas = latest_emas
+        """Checks for a break of a key level with consecutive candle confirmation."""
+        if latest_bar is None:
             return None
 
-        # --- Priority 1: Check for EMA-Supported Confluence Break ---
-        confluence_break_event = self._check_confluence_break(latest_bar, levels, self.previous_emas, session_ema_period)
-        if confluence_break_event:
-            print(f"*** CONFLUENCE BREAK DETECTED: {confluence_break_event['type']} ***")
-            self.reset()
-            self.last_pivot_candle = confluence_break_event['candle']
-            return confluence_break_event
-
-        # --- Priority 2: Check for standard break confirmation ---
         close_price = latest_bar['close']
-        for level_name, level_value in levels.items():
-            if level_value is None:
-                continue
+        
+        # Define the trading range by finding the highest support and lowest resistance
+        support_levels = {k: v for k, v in levels.items() if k in ['pdl', 'pml'] and v is not None}
+        resistance_levels = {k: v for k, v in levels.items() if k in ['pdh', 'pmh'] and v is not None}
+        
+        highest_support = max(support_levels.values()) if support_levels else float('-inf')
+        lowest_resistance = min(resistance_levels.values()) if resistance_levels else float('inf')
 
-            # Check for break above resistance levels (PDH, PMH)
-            if level_name in ['pdh', 'pmh'] and close_price > level_value:
-                if self.last_break_type != 'up':  # Reset only when break direction changes
-                    self.reset()
-                self.break_above_confirmations += 1
-                self.last_break_type = 'up'
-                if self.break_above_confirmations >= self.confirmation_candles:
-                    ema_200 = latest_emas.get('ema_200')
-                    if ema_200 and close_price < ema_200:
-                        print(f"Break above {level_value:.2f} ignored. Price {close_price:.2f} is below 200 EMA {ema_200:.2f}.")
-                        return None
-                    print(f"*** BREAK CONFIRMED: resistance_break_up at {close_price:.2f} (Level: {level_value:.2f}) ***")
-                    self.last_pivot_candle = latest_bar
-                    return {'type': 'resistance_break_up', 'level': level_value, 'candle': latest_bar}
+        if self.logger:
+            self.logger.info(f"[{self.symbol}] Break Check: Close={close_price:.2f}, Range=[{highest_support:.2f}, {lowest_resistance:.2f}], Confirmations(Up/Down): {self.break_above_confirmations}/{self.break_below_confirmations}")
 
-            # Check for break below support levels (PDL, PML)
-            elif level_name in ['pdl', 'pml'] and close_price < level_value:
-                if self.last_break_type != 'down':  # Reset only when break direction changes
-                    self.reset()
-                self.break_below_confirmations += 1
-                self.last_break_type = 'down'
-                if self.break_below_confirmations >= self.confirmation_candles:
-                    ema_200 = latest_emas.get('ema_200')
-                    if ema_200 and close_price > ema_200:
-                        print(f"Break below {level_value:.2f} ignored. Price {close_price:.2f} is above 200 EMA {ema_200:.2f}.")
-                        return None
-                    print(f"*** BREAK CONFIRMED: support_break_down at {close_price:.2f} (Level: {level_value:.2f}) ***")
-                    self.last_pivot_candle = latest_bar
-                    return {'type': 'support_break_down', 'level': level_value, 'candle': latest_bar}
+        # Determine the current bar's position relative to the range
+        is_breaking_above = close_price > lowest_resistance and lowest_resistance != float('inf')
+        is_breaking_below = close_price < highest_support and highest_support != float('-inf')
 
-        # If price is not breaking any level, check if it's within the main range, which implies a reset.
-        resistance_levels = [lvl for lvl in [levels.get('pdh'), levels.get('pmh')] if lvl is not None]
-        support_levels = [lvl for lvl in [levels.get('pdl'), levels.get('pml')] if lvl is not None]
-        if resistance_levels and support_levels:
-            if close_price < max(resistance_levels) and close_price > min(support_levels):
+        # Update confirmation counters based on the bar's position
+        if is_breaking_above:
+            if self.last_break_type != 'up':
                 self.reset()
+            self.last_break_type = 'up'
+            self.break_above_confirmations += 1
+            if self.logger:
+                self.logger.info(f"[{self.symbol}] Breaking ABOVE. Confirmations: {self.break_above_confirmations}")
+        elif is_breaking_below:
+            if self.last_break_type != 'down':
+                self.reset()
+            self.last_break_type = 'down'
+            self.break_below_confirmations += 1
+            if self.logger:
+                self.logger.info(f"[{self.symbol}] Breaking BELOW. Confirmations: {self.break_below_confirmations}")
+        else:
+            if self.break_above_confirmations > 0 or self.break_below_confirmations > 0:
+                if self.logger:
+                    self.logger.info(f"[{self.symbol}] Price back in range. Resetting confirmations.")
+                self.reset()
+
+        # Check if a breakout is confirmed and return the event
+        ema_200 = latest_emas.get('ema_200')
+        if self.break_above_confirmations >= self.confirmation_candles and ema_200 and close_price > ema_200:
+            broken_level_name = min(resistance_levels, key=resistance_levels.get)
+            self.logger.info(f"[{self.symbol}] Breakout UP confirmed above {broken_level_name} at {resistance_levels[broken_level_name]}")
+            event = {'type': 'up', 'level_name': broken_level_name, 'level_value': resistance_levels[broken_level_name], 'candle': latest_bar}
+            self.reset() # Reset after confirmation
+            return event
+
+        if self.break_below_confirmations >= self.confirmation_candles and ema_200 and close_price < ema_200:
+            broken_level_name = max(support_levels, key=support_levels.get)
+            self.logger.info(f"[{self.symbol}] Breakout DOWN confirmed below {broken_level_name} at {support_levels[broken_level_name]}")
+            event = {'type': 'down', 'level_name': broken_level_name, 'level_value': support_levels[broken_level_name], 'candle': latest_bar}
+            self.reset() # Reset after confirmation
+            return event
 
         self.previous_bar = latest_bar
         self.previous_emas = latest_emas
@@ -117,7 +118,9 @@ class BreakDetector:
         # Only print reset message if there was something to reset
         if self.break_above_confirmations > 0 or self.break_below_confirmations > 0:
             print("BreakDetector state has been reset.")
-        
+
         self.break_above_confirmations = 0
         self.break_below_confirmations = 0
         self.last_break_type = None
+        self.last_pivot_candle = None
+        self.previous_bar = None

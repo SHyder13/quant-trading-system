@@ -233,7 +233,7 @@ def main():
                     
                     pivot_candle, rejection_candle, confluence_type = symbol_states[symbol]['retest_detector'].check_for_retest(latest_bar, break_event['level'], break_direction, latest_emas)
 
-                    if pivot_candle and rejection_candle:
+                    if pivot_candle is not None and rejection_candle is not None:
                         level_name = break_event.get('name', 'level')
                         level_price = break_event['level']
                         print(f"*** TRADE SIGNAL: Confirmed retest of {level_name} at {level_price:.2f} for {symbol}! ***")
@@ -361,7 +361,7 @@ def main():
     except KeyboardInterrupt:
         print("\n--- Trading bot stopped manually. System shutdown. ---")
     except Exception as e:
-        logger.exception("An unexpected error occurred in the main loop:")
+        logger.error(f"An unexpected error occurred in the main loop: {e}")
         print(f"\n--- An unexpected error occurred. See logs. System shutdown. ---")
 
 

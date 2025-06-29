@@ -6,60 +6,61 @@ class SignalGenerator:
         self.break_detector = break_detector
         self.retest_detector = retest_detector
         self.timeout = timedelta(minutes=strategy_config.RETEST_TIMEOUT_MINUTES)
-        self.reset()
+        self.active_break_info = None
 
     def process_bar(self, bar, levels, latest_emas):
         """
-        Processes a new data bar through the state machine to generate a signal.
-        Returns a tuple of (signal, pivot_candle, rejection_candle, breakout_candle).
+        Processes a new data bar to generate a trade signal.
+        This is a stateless process that checks for a break, and if one is active, checks for a retest.
+        Returns a tuple of (signal_info, pivot_candle, rejection_candle, breakout_candle).
         """
-        if self.state == 'WAITING_FOR_BREAK':
-            break_event, broken_level, pivot_candle = self.break_detector.check_for_break(bar, levels, latest_emas)
-            if break_event:
-                # Handle the new, immediate confluence break signal
-                if 'confluence_break' in break_event:
-                    signal = 'BUY' if break_event == 'confluence_break_up' else 'SELL'
-                    print(f"$$$ [{bar.name}] EMA Confluence Break & SIGNAL GENERATED: {signal} $$$")
-                    # For this signal type, pivot_candle is the bounce candle, and there's no retest/rejection candle.
-                    signal_to_return = (signal, pivot_candle, None, bar)
-                    self.reset()
-                    return signal_to_return
-                
-                # Handle the standard break that requires a retest
-                else:
-                    print(f"[{bar.name}] Break detected: {break_event}. Moving to WAITING_FOR_RETEST.")
-                    self.state = 'WAITING_FOR_RETEST'
-                    self.break_event = break_event
-                    self.broken_level = broken_level
-                    self.breakout_candle = pivot_candle # In a standard break, this is the breakout candle
-                    self.breakout_time = bar.name
-                    self.retest_detector.reset()
+        # If we are not waiting for a retest, look for a new break.
+        if self.active_break_info is None:
+            break_info = self.break_detector.check_for_break(bar, levels, latest_emas)
+            if break_info:
+                print(f"[{bar.name}] Break detected: {break_info['type']}. Now watching for retest.")
+                self.active_break_info = {
+                    'break_event': break_info['type'],
+                    'broken_level': break_info['level_value'],
+                    'breakout_candle': break_info['candle'],
+                    'breakout_time': bar.name
+                }
+            return {'side': 'NONE'}, None, None, None, None
 
-        elif self.state == 'WAITING_FOR_RETEST':
+        # If we are waiting for a retest, check for it.
+        if self.active_break_info:
             # Check for timeout first
-            if bar.name > self.breakout_time + self.timeout:
+            if bar.name > self.active_break_info['breakout_time'] + self.timeout:
                 print(f"[{bar.name}] Retest timed out after {self.timeout}. Resetting.")
                 self.reset()
-                return 'NONE', None, None, None # Exit processing for this bar after timeout.
+                return {'side': 'NONE'}, None, None, None, None
 
-            break_direction = 'up' if self.break_event == 'resistance_break_up' else 'down'
-            pivot_candle, rejection_candle = self.retest_detector.check_for_retest(bar, self.broken_level, break_direction, latest_emas)
-            if pivot_candle is not None:
-                signal = 'BUY' if self.break_event == 'resistance_break_up' else 'SELL'
+            # Determine the direction of the break to check for the correct retest.
+            break_direction = 'up' if self.active_break_info['break_event'] == 'up' else 'down'
+            
+            # Check for the retest signal
+            pivot_candle, rejection_candle, confluence_type = self.retest_detector.check_for_retest(
+                bar, self.active_break_info['broken_level'], break_direction, latest_emas
+            )
+
+            if rejection_candle is not None:
+                signal = 'BUY' if break_direction == 'up' else 'SELL'
                 print(f"$$$ [{bar.name}] Retest Confirmed & SIGNAL GENERATED: {signal} $$$")
-                signal_to_return = (signal, pivot_candle, rejection_candle, self.breakout_candle)
+                signal_info = {'price': bar['close'], 'side': signal, 'broken_level': self.active_break_info['broken_level']}
+                
+                # The breakout_candle is from when the break was first detected.
+                breakout_candle = self.active_break_info['breakout_candle']
+                signal_to_return = (signal_info, pivot_candle, rejection_candle, breakout_candle, confluence_type)
+                
                 self.reset()
                 return signal_to_return
 
-        return 'NONE', None, None, None
+        return {'side': 'NONE'}, None, None, None, None
 
     def reset(self):
-        """Resets the state machine to its initial state."""
-        self.state = 'WAITING_FOR_BREAK'
-        self.break_event = None
-        self.breakout_candle = None
-        self.broken_level = None
-        self.breakout_time = None
+        """Resets the generator by clearing any active break information."""
+        self.active_break_info = None
+        # The retest_detector is now stateless, but we call reset for compatibility.
         self.retest_detector.reset()
 
     def get_last_pivot_candle(self):
