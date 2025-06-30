@@ -5,7 +5,7 @@ class LevelCalculator:
     def __init__(self):
         pass
 
-    def calculate_all_levels(self, intraday_data: pd.DataFrame, current_simulation_date: pd.Timestamp):
+    def calculate_all_levels(self, intraday_data: pd.DataFrame, current_simulation_date: pd.Timestamp = None):
         """
         Calculates key levels from intraday data relative to a specific simulation date.
         - PDH/PDL are from the previous day's Regular Trading Hours (9:30 AM - 4:00 PM ET).
@@ -33,8 +33,10 @@ class LevelCalculator:
         intraday_data_et = intraday_data.copy()
         intraday_data_et.index = intraday_data_et.index.tz_convert(et_tz)
 
-        # Use the provided simulation date to determine the context for level calculation
-        if current_simulation_date.tz is None:
+        # Use the provided simulation date or default to now()
+        if current_simulation_date is None:
+            current_simulation_date = pd.Timestamp.now(tz='UTC')
+        elif current_simulation_date.tz is None:
             current_simulation_date = current_simulation_date.tz_localize('UTC')
         simulation_date_et = current_simulation_date.tz_convert(et_tz).normalize()
 
