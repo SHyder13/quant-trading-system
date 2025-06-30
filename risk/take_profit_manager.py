@@ -13,7 +13,7 @@ class TakeProfitManager:
 
     def check_ema_trail_stop(self, latest_bar, position_side, latest_emas):
         """
-        Checks if the price has closed across the 13 EMA, triggering a trailing stop exit.
+        Checks if the price has closed across the 48 EMA, triggering a trailing stop exit.
 
         Args:
             latest_bar (pd.Series): The most recent data bar.
@@ -23,18 +23,18 @@ class TakeProfitManager:
         Returns:
             bool: True if the position should be exited, False otherwise.
         """
-        ema_13 = latest_emas.get('ema_13')
-        if not ema_13:
+        ema_48 = latest_emas.get('ema_48')
+        if not ema_48:
             return False # Not enough data
 
         close_price = latest_bar['close']
         should_exit = False
 
-        if position_side == 'BUY' and close_price < ema_13:
-            print(f"!!! EMA TRAIL STOP HIT for LONG: Price {close_price:.2f} closed below 13 EMA {ema_13:.2f} !!!")
+        if position_side == 'BUY' and close_price < ema_48:
+            print(f"!!! EMA TRAIL STOP HIT for LONG: Price {close_price:.2f} closed below 48 EMA {ema_48:.2f} !!!")
             should_exit = True
-        elif position_side == 'SELL' and close_price > ema_13:
-            print(f"!!! EMA TRAIL STOP HIT for SHORT: Price {close_price:.2f} closed above 13 EMA {ema_13:.2f} !!!")
+        elif position_side == 'SELL' and close_price > ema_48:
+            print(f"!!! EMA TRAIL STOP HIT for SHORT: Price {close_price:.2f} closed above 48 EMA {ema_48:.2f} !!!")
             should_exit = True
 
         return should_exit

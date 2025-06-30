@@ -19,8 +19,8 @@ LEVEL_TOLERANCE_POINTS = 1.5
 # Defines the buffer in points to be placed beyond the retest candle's high/low for a stop-loss.
 # This is now symbol-specific to account for varying volatility.
 STOP_LOSS_BUFFER_POINTS = {
-    'MNQ': 25.0,  # Higher volatility, needs a wider stop
-    'MES': 3.0,   # Lower volatility
+    'MNQ': 35.0,  # Higher volatility, needs a wider stop
+    'MES': 8.0,   # Lower volatility, adjusted for better performance
     'M2K': 7.5
 }
 POSITION_CONCENTRATION_LIMIT = 0.05

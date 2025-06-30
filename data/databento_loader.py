@@ -89,8 +89,12 @@ class DatabentoLoader:
 
         # If Databento included a human-readable symbol column we can filter
         if "symbol" in df.columns:
-            # Match all contracts that start with the base symbol (e.g., "MNQ" matches "MNQU0", "MNQZ0", etc.)
-            df = df[df["symbol"].str.upper().str.startswith(symbol.upper())]
+            # Match contracts that start with the base symbol (e.g., "MNQ" matches "MNQU0")
+            # AND exclude calendar spreads (e.g., "MNQU0-MNQZ0") which contain a hyphen.
+            df = df[
+                df["symbol"].str.upper().str.startswith(symbol.upper()) & 
+                ~df["symbol"].str.contains("-")
+            ]
         elif "publisher_id" in df.columns or "instrument_id" in df.columns:
             # Multi-instrument file without plain symbol. In that case we keep
             # everything – the calling back-tester should only request the
@@ -119,6 +123,7 @@ class DatabentoLoader:
         if timeframe and timeframe.lower() != "1m":
             if timeframe.endswith("m"):
                 minutes = int(timeframe.rstrip("m"))
+                print(f"DEBUG: Resampling to {minutes}m. Shape before: {df.shape}")
                 df = df.resample(f"{minutes}min").agg(
                     {
                         "open": "first",
@@ -128,6 +133,7 @@ class DatabentoLoader:
                         "volume": "sum",
                     }
                 ).dropna()
+                print(f"DEBUG: Shape after resampling and dropna: {df.shape}")
             else:
                 raise ValueError(
                     "DatabentoLoader currently supports only minute timeframes."

@@ -54,11 +54,14 @@ class LevelCalculator:
             if not day_data.empty:
                 rth_data = day_data.between_time('09:30', '16:00')
                 if not rth_data.empty:
-                    levels['pdh'] = rth_data['high'].max()
-                    levels['pdl'] = rth_data['low'].min()
-                    previous_trading_day_date = date_candidate
-                    print(f"Calculated RTH PDH/PDL from {previous_trading_day_date}: PDH={levels.get('pdh', 0):.2f}, PDL={levels.get('pdl', 0):.2f}")
-                    break  # Found the most recent trading day, so we can stop.
+                    # Filter out non-positive prices before calculating min/max
+                    valid_rth_data = rth_data[rth_data['low'] > 0]
+                    if not valid_rth_data.empty:
+                        levels['pdh'] = valid_rth_data['high'].max()
+                        levels['pdl'] = valid_rth_data['low'].min()
+                        previous_trading_day_date = date_candidate
+                        print(f"Calculated RTH PDH/PDL from {previous_trading_day_date}: PDH={levels.get('pdh', 0):.2f}, PDL={levels.get('pdl', 0):.2f}")
+                        break  # Found the most recent trading day, so we can stop.
 
         if not previous_trading_day_date:
             print(f"Warning: No previous trading day with RTH data found before {simulation_date_et.date()}.")
@@ -68,9 +71,12 @@ class LevelCalculator:
         if not current_day_data.empty:
             premarket_data = current_day_data.between_time('04:00', '09:29')
             if not premarket_data.empty:
-                levels['pmh'] = premarket_data['high'].max()
-                levels['pml'] = premarket_data['low'].min()
-                print(f"Calculated Premarket Levels from {simulation_date_et.date()}: PMH={levels.get('pmh', 0):.2f}, PML={levels.get('pml', 0):.2f}")
+                # Filter out non-positive prices before calculating min/max
+                valid_premarket_data = premarket_data[premarket_data['low'] > 0]
+                if not valid_premarket_data.empty:
+                    levels['pmh'] = valid_premarket_data['high'].max()
+                    levels['pml'] = valid_premarket_data['low'].min()
+                    print(f"Calculated Premarket Levels from {simulation_date_et.date()}: PMH={levels.get('pmh', 0):.2f}, PML={levels.get('pml', 0):.2f}")
             else:
                 print(f"Warning: No data found in premarket time range (04:00-09:29 ET) for {simulation_date_et.date()}.")
         else:

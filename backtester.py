@@ -29,6 +29,7 @@ from shared_components import SYSTEM_LOGGER
 
 class Backtester:
     def __init__(self, start_date, end_date, symbols, initial_balance):
+        self.original_start_date = start_date  # Store the original start date for reporting
         self.start_date = start_date
         self.end_date = end_date
         self.symbols = symbols
@@ -407,7 +408,8 @@ class Backtester:
 
         if csv_data:
             csv_df = pd.DataFrame(csv_data)
-            start_str = self.start_date.strftime('%Y%m%d')
+            # Use the original start date for the filename to fix the naming bug
+            start_str = self.original_start_date.strftime('%Y%m%d')
             end_str = self.end_date.strftime('%Y%m%d')
             csv_filename = f"backtest_results_{start_str}_to_{end_str}.csv"
             csv_df.to_csv(csv_filename, index=False)
@@ -421,25 +423,31 @@ class Backtester:
         print(f"Wins:               {wins}")
         print(f"Losses:             {losses}")
         print(f"Win Rate:           {win_rate:.2f}%")
-
 if __name__ == '__main__':
-    import sys
-    # Accept date arguments: python backtester.py YYYY-MM-DD YYYY-MM-DD
-    if len(sys.argv) >= 3:
-        try:
-            backtest_start_date = datetime.strptime(sys.argv[1], "%Y-%m-%d")
-            backtest_end_date = datetime.strptime(sys.argv[2], "%Y-%m-%d")
-        except ValueError:
-            print("Invalid date format. Use YYYY-MM-DD. Falling back to defaults.")
-            backtest_start_date = datetime(2024, 1, 1)
-            backtest_end_date = datetime(2024, 3, 1)
-    else:
-        backtest_start_date = datetime(2024, 1, 1)
-        backtest_end_date = datetime(2024, 3, 1)
-    
+    # ==================================================================
+    # --- User Config ---
+    # ==================================================================
+    # Define the symbols to test from the available data
     symbols_to_test = ['MNQ', 'MES']
-    account_balance = 2000.0
 
+    # Define the date range for the backtest.
+    # The backtester will run on the data available within this range.
+    # Adjusted to match the available Databento data file.
+    backtest_start_date = datetime(2025, 6, 1)
+    backtest_end_date = datetime(2025, 6, 27)
+
+    # Define the initial account balance for the simulation.
+    # Increased for a longer-term test.
+    account_balance = 50000.0
+    # ==================================================================
+
+    print("--- Backtester Configuration ---")
+    print(f"Symbols: {symbols_to_test}")
+    print(f"Period: {backtest_start_date.strftime('%Y-%m-%d')} to {backtest_end_date.strftime('%Y-%m-%d')}")
+    print(f"Initial Balance: ${account_balance:,.2f}")
+    print("---------------------------------")
+
+    # Initialize and run the backtester
     backtester = Backtester(
         start_date=backtest_start_date,
         end_date=backtest_end_date,
@@ -447,4 +455,4 @@ if __name__ == '__main__':
         initial_balance=account_balance
     )
     backtester.run()
-    backtester.shutdown()
+    backtester.shutdown() # Call shutdown to print final results
