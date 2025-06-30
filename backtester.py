@@ -25,7 +25,7 @@ from risk.stop_loss_manager import StopLossManager
 from risk.take_profit_manager import TakeProfitManager
 
 from shared_components import SYSTEM_LOGGER
-from execution.broker_interface import BrokerInterface
+# from execution.broker_interface import BrokerInterface # No longer needed for backtesting
 
 class Backtester:
     def __init__(self, start_date, end_date, symbols, initial_balance):
@@ -37,9 +37,7 @@ class Backtester:
         self.logger = SYSTEM_LOGGER
 
         # Initialize components
-        # Broker is not required for historical backtests when using local data but
-        # we keep the initialisation for compatibility with existing components
-        self.broker = BrokerInterface(main_config.USERNAME, main_config.API_KEY, main_config.ACCOUNT_NAME)
+        # self.broker = BrokerInterface(...) # No longer needed for backtesting
 
         # ------------------------------------------------------------------
         # Databento integration (NEW)

@@ -22,7 +22,7 @@ from typing import Dict, Union
 import pandas as pd
 
 try:
-    import databento as db
+    from databento import DBNStore
 except ImportError as exc:  # pragma: no cover – improves DX if sdk is missing
     raise ImportError(
         "The `databento` package is required for DatabentoLoader. Run\n"
@@ -83,12 +83,14 @@ class DatabentoLoader:
         # ------------------------------------------------------------------
         # 1. Read DBN file → DataFrame
         # ------------------------------------------------------------------
-        reader = db.Reader.from_file(str(file_path))
-        df = reader.to_df()
+        # DBNStore is the modern replacement for the deprecated `Reader` class
+        store = DBNStore.from_file(file_path)
+        df = store.to_df()
 
         # If Databento included a human-readable symbol column we can filter
         if "symbol" in df.columns:
-            df = df[df["symbol"].str.upper() == symbol.upper()]
+            # Match all contracts that start with the base symbol (e.g., "MNQ" matches "MNQU0", "MNQZ0", etc.)
+            df = df[df["symbol"].str.upper().str.startswith(symbol.upper())]
         elif "publisher_id" in df.columns or "instrument_id" in df.columns:
             # Multi-instrument file without plain symbol. In that case we keep
             # everything – the calling back-tester should only request the
@@ -99,8 +101,8 @@ class DatabentoLoader:
         # ------------------------------------------------------------------
         # 2. Basic cleaning / normalisation
         # ------------------------------------------------------------------
-        df["ts_event"] = pd.to_datetime(df["ts_event"], unit="ns", utc=True)
-        df.set_index("ts_event", inplace=True)
+        # DBNStore.to_df() already returns a DataFrame with a DatetimeIndex,
+        # so we just need to ensure it's sorted.
         df.sort_index(inplace=True)
 
         # Drop any non-price columns to keep downstream code simple
