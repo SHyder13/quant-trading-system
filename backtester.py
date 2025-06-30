@@ -11,7 +11,8 @@ import config.market_config as market_config
 from config import main_config
 
 # Import system components
-from data.market_data_fetcher import MarketDataFetcher
+# Switching to Databento for historical data
+from data.databento_loader import DatabentoLoader
 from data.level_calculator import LevelCalculator
 from data.ema_guides import EMAGuides
 
@@ -36,8 +37,17 @@ class Backtester:
         self.logger = SYSTEM_LOGGER
 
         # Initialize components
+        # Broker is not required for historical backtests when using local data but
+        # we keep the initialisation for compatibility with existing components
         self.broker = BrokerInterface(main_config.USERNAME, main_config.API_KEY, main_config.ACCOUNT_NAME)
-        self.market_fetcher = MarketDataFetcher(self.broker.session_token)
+
+        # ------------------------------------------------------------------
+        # Databento integration (NEW)
+        # ------------------------------------------------------------------
+        self.data_loader = DatabentoLoader(
+            api_key=main_config.DATABENTO_API_KEY,
+            file_paths=main_config.DATABENTO_FILE_PATHS,
+        )
         self.level_calculator = LevelCalculator()
         self.ema_calculator = EMAGuides()
         self.stop_loss_manager = StopLossManager(risk_config)
@@ -78,11 +88,11 @@ class Backtester:
             fetch_start_date = self.start_date - timedelta(days=5)
             start_date_str = fetch_start_date.isoformat() + 'Z'
             end_date_str = self.end_date.isoformat() + 'Z'
-            data = self.market_fetcher.fetch_historical_data(
+            data = self.data_loader.load_data(
                 symbol,
-                start_date_str=start_date_str,
-                end_date_str=end_date_str,
-                timeframe=main_config.TIMEFRAME
+                start_date=fetch_start_date,
+                end_date=self.end_date,
+                timeframe=main_config.TIMEFRAME,
             )
             if data is None or data.empty:
                 print(f"Could not fetch data for {symbol}. Aborting.")
@@ -423,11 +433,11 @@ if __name__ == '__main__':
             backtest_end_date = datetime.strptime(sys.argv[2], "%Y-%m-%d")
         except ValueError:
             print("Invalid date format. Use YYYY-MM-DD. Falling back to defaults.")
-            backtest_start_date = datetime(2025, 6, 10)
-            backtest_end_date = datetime(2025, 6, 28)
+            backtest_start_date = datetime(2024, 1, 1)
+            backtest_end_date = datetime(2024, 3, 1)
     else:
-        backtest_start_date = datetime(2025, 6, 10)
-        backtest_end_date = datetime(2025, 6, 28)
+        backtest_start_date = datetime(2024, 1, 1)
+        backtest_end_date = datetime(2024, 3, 1)
     
     symbols_to_test = ['MNQ', 'MES']
     account_balance = 2000.0

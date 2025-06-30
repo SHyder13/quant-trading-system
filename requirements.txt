@@ -1,5 +1,6 @@
 # Project Dependencies
 pandas
 numpy
+databento
 requests
 loguru

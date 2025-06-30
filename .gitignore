@@ -85,6 +85,9 @@ dmypy.json
 *.log
 logs/
 
+# Databento data files
+*.dbn
+
 # OS-generated files
 .DS_Store
 .DS_Store?
