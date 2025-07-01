@@ -18,8 +18,8 @@ RETEST_TOLERANCE_POINTS = {
 # The minimum volume required on a breakout candle for a signal to be considered valid.
 # This is now a dictionary to support different thresholds per symbol.
 MIN_BREAKOUT_VOLUME = {
-    'MNQ': 80,  # Corresponds to NQ
-    'MES': 20,   # Corresponds to ES
+    'MNQ': 500, # Increased for higher conviction breakouts
+    'MES': 250,  # Increased for higher conviction breakouts
 }
 
 # Defines the minimum required ratio of the candle's body to its total range (high-low)

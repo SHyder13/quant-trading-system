@@ -79,8 +79,8 @@ class Backtester:
 
     def run(self):
         """Main method to run the backtest."""
-        print(f"--- Starting Backtest for {self.symbols} from {self.start_date} to {self.end_date} ---")
-        print(f"Initial Balance: ${self.initial_balance:,.2f}")
+        logging.info(f"--- Starting Backtest for {self.symbols} from {self.start_date} to {self.end_date} ---")
+        logging.info(f"Initial Balance: ${self.initial_balance:,.2f}")
 
         # Fetch all historical data for the period
         for symbol in self.symbols:
@@ -94,7 +94,7 @@ class Backtester:
                 timeframe=main_config.TIMEFRAME,
             )
             if data is None or data.empty:
-                print(f"Could not fetch data for {symbol}. Aborting.")
+                logging.info(f"Could not fetch data for {symbol}. Aborting.")
                 return
             self.all_data[symbol] = data
 
@@ -104,7 +104,7 @@ class Backtester:
 
     def run_day_simulation(self, current_date):
         """Simulates trading for a single day, mirroring main.py's logic."""
-        print(f"\n--- Simulating Day: {current_date.strftime('%Y-%m-%d')} ---")
+        logging.info(f"\n--- Simulating Day: {current_date.strftime('%Y-%m-%d')} ---")
 
         # 1. Daily Reset and Level Calculation
         daily_data_frames = []
@@ -134,7 +134,7 @@ class Backtester:
             ]
 
             if data_for_levels.empty:
-                print(f"Warning: No historical data available before {cutoff_time_et.strftime('%Y-%m-%d %H:%M')} ET for level calculation.")
+                logging.info(f"Warning: No historical data available before {cutoff_time_et.strftime('%Y-%m-%d %H:%M')} ET for level calculation.")
                 continue
 
             # Pass the correctly defined timezone-aware date to the calculator.
@@ -142,7 +142,7 @@ class Backtester:
             if not all(val is not None for val in levels.values()):
                 # It's possible for some levels not to form (e.g., no pre-market data), but we need PDH/PDL at a minimum.
                 if levels.get('pdh') is None or levels.get('pdl') is None:
-                    print(f"CRITICAL: Could not calculate PDH/PDL for {symbol} on {current_date.strftime('%Y-%m-%d')}. Skipping day.")
+                    logging.info(f"CRITICAL: Could not calculate PDH/PDL for {symbol} on {current_date.strftime('%Y-%m-%d')}. Skipping day.")
                     continue
             
             self.symbol_states[symbol]['levels'] = levels
@@ -214,10 +214,10 @@ class Backtester:
                 session_ema = 13 if current_session == 'morning' else 48
                 break_event = state['break_detector'].check_for_break(latest_bar, active_levels, latest_emas, session_ema)
                 if break_event:
-                    print(f"  >>> BREAK_EVENT {symbol} {timestamp}: O={latest_bar['open']:.2f} H={latest_bar['high']:.2f} L={latest_bar['low']:.2f} C={latest_bar['close']:.2f} vs {break_event['level_name'].upper()} {break_event['level_value']:.2f}")
+                    logging.info(f"  >>> BREAK_EVENT {symbol} {timestamp}: O={latest_bar['open']:.2f} H={latest_bar['high']:.2f} L={latest_bar['low']:.2f} C={latest_bar['close']:.2f} vs {break_event['level_name'].upper()} {break_event['level_value']:.2f}")
                     name = break_event['level_name'].upper()
                     level_price = break_event['level_value']
-                    # print(f"  -> [{timestamp.time()}] BREAK: {symbol} broke {name} at {level_price:.2f}")
+                    # logging.info(f"  -> [{timestamp.time()}] BREAK: {symbol} broke {name} at {level_price:.2f}")
                     state['state'] = 'AWAITING_RETEST'
                     state['last_break_event'] = {**break_event, 'level': level_price, 'name': name}
                     state['retest_timeout_stamp'] = timestamp + timedelta(minutes=strategy_config.RETEST_TIMEOUT_MINUTES)
@@ -225,7 +225,7 @@ class Backtester:
             # --- STATE: AWAITING_RETEST ---
             elif current_state == 'AWAITING_RETEST':
                 if timestamp > state['retest_timeout_stamp']:
-                    print(f"  -> [{timestamp.time()}] TIMEOUT: Retest for {symbol} timed out. Resetting.")
+                    logging.info(f"  -> [{timestamp.time()}] TIMEOUT: Retest for {symbol} timed out. Resetting.")
                     state['state'] = 'AWAITING_BREAK'
                     continue
 
@@ -234,7 +234,7 @@ class Backtester:
                 pivot, reject, conf_type = state['retest_detector'].check_for_retest(latest_bar, break_event['level'], break_dir, latest_emas)
 
                 if pivot is not None and reject is not None:
-                    print(f"  -> [{timestamp.time()}] RETEST DETECTED on {symbol} at {break_event['level']:.2f}. Waiting for confirmation candle.")
+                    logging.info(f"  -> [{timestamp.time()}] RETEST DETECTED on {symbol} at {break_event['level']:.2f}. Waiting for confirmation candle.")
                     state['state'] = 'AWAITING_CONFIRMATION'
                     state['retest_context'] = {
                         'break_event': break_event,
@@ -246,7 +246,7 @@ class Backtester:
             # --- STATE: AWAITING_CONFIRMATION ---
             elif current_state == 'AWAITING_CONFIRMATION':
                 if not state.get('retest_context'):
-                    print(f"  -> [{timestamp.time()}] CRITICAL ERROR: In AWAITING_CONFIRMATION with no context. Resetting.")
+                    logging.info(f"  -> [{timestamp.time()}] CRITICAL ERROR: In AWAITING_CONFIRMATION with no context. Resetting.")
                     state['state'] = 'AWAITING_BREAK'
                     continue
 
@@ -255,15 +255,15 @@ class Backtester:
                 break_event = retest_context['break_event']
                 break_dir = 'up' if 'up' in break_event['type'] else 'down'
 
-                # Confirmation Logic: Current candle must close decisively beyond the retest candle.
+                # Confirmation Logic: The confirmation candle must simply be a conviction candle in the trade's direction.
                 is_confirmed = False
-                if break_dir == 'up' and latest_bar['close'] > retest_candle['high']:
+                if break_dir == 'up' and latest_bar['close'] > latest_bar['open']:
                     is_confirmed = True
-                elif break_dir == 'down' and latest_bar['close'] < retest_candle['low']:
+                elif break_dir == 'down' and latest_bar['close'] < latest_bar['open']:
                     is_confirmed = True
 
                 if is_confirmed:
-                    print(f"  -> [{timestamp.time()}] CONFIRMATION PASSED for {symbol}. Validating trade.")
+                    logging.info(f"  -> [{timestamp.time()}] CONFIRMATION PASSED for {symbol}. Validating trade.")
                     trade_side = 'BUY' if break_dir == 'up' else 'SELL'
                     context = {
                         'breakout_candle': break_event['candle'],
@@ -275,7 +275,7 @@ class Backtester:
                     }
 
                     if not state['pattern_validator'].validate_signal(trade_side, context):
-                        print(f"  -> [{timestamp.time()}] Post-confirmation validation failed. Resetting.")
+                        logging.info(f"  -> [{timestamp.time()}] Post-confirmation validation failed. Resetting.")
                         state['state'] = 'AWAITING_BREAK'
                         state['retest_context'] = None
                         continue
@@ -306,9 +306,9 @@ class Backtester:
                     }
                     state['state'] = 'IN_TRADE'
                     state['daily_trade_status']['trade_taken'] = True
-                    print(f"  -> [{timestamp.time()}] TRADE OPEN: {trade_side} {quantity} {symbol} @ {entry_price:.2f}")
+                    logging.info(f"  -> [{timestamp.time()}] TRADE OPEN: {trade_side} {quantity} {symbol} @ {entry_price:.2f}")
                 else:
-                    print(f"  -> [{timestamp.time()}] Confirmation FAILED for {symbol}. Resetting.")
+                    logging.info(f"  -> [{timestamp.time()}] Confirmation FAILED for {symbol}. Resetting.")
                     state['state'] = 'AWAITING_BREAK'
                 
                 state['retest_context'] = None # Always reset context
@@ -327,7 +327,7 @@ class Backtester:
                 # Check for EMA trail stop logic
                 if self.take_profit_manager.check_ema_trail_stop(latest_bar, trade['side'], latest_emas):
                     ema_13 = latest_emas.get('ema_13', 'N/A')
-                    print(f"  -> [{timestamp.time()}] {symbol} EMA TRAIL TRIGGERED. Close: {latest_bar['close']:.2f}, EMA_13: {ema_13:.2f}. Entering Probation.")
+                    logging.info(f"  -> [{timestamp.time()}] {symbol} EMA TRAIL TRIGGERED. Close: {latest_bar['close']:.2f}, EMA_13: {ema_13:.2f}. Entering Probation.")
                     state['state'] = 'EMA_PROBATION'
                     state['active_trade']['probation_candle_timestamp'] = latest_bar.name
 
@@ -341,7 +341,7 @@ class Backtester:
                         self.close_trade(state, latest_bar, 'EMA_TRAIL')
                     else:
                         # Condition resolved, return to trade
-                        # print(f"  -> [{timestamp.time()}] {symbol} EMA Probation resolved. Returning to trade.")
+                        # logging.info(f"  -> [{timestamp.time()}] {symbol} EMA Probation resolved. Returning to trade.")
                         state['state'] = 'IN_TRADE'
 
     def close_trade(self, state, exit_bar, exit_reason):
@@ -353,6 +353,9 @@ class Backtester:
         elif exit_reason == 'EMA_TRAIL': exit_price = exit_bar['close']
 
         pnl = (exit_price - trade['entry_price']) if trade['side'] == 'BUY' else (trade['entry_price'] - exit_price)
+
+        if exit_reason == 'EMA_TRAIL':
+            exit_reason = f"EMA_TRAIL ({'PROFIT' if pnl > 0 else 'LOSS'})"
         pnl_dollars = pnl * market_config.DOLLAR_PER_POINT[trade['symbol']] * trade['quantity']
         self.balance += pnl_dollars
 
@@ -362,18 +365,18 @@ class Backtester:
         state['daily_trade_status']['last_trade_outcome'] = result.lower()
         state['active_trade'] = None
         state['state'] = 'AWAITING_BREAK'
-        print(f"     - [{exit_bar.name.time()}] Trade Closed: {result} by {exit_reason}. P/L: ${pnl_dollars:,.2f}. New Balance: ${self.balance:,.2f}")
+        logging.info(f"     - [{exit_bar.name.time()}] Trade Closed: {result} by {exit_reason}. P/L: ${pnl_dollars:,.2f}. New Balance: ${self.balance:,.2f}")
 
     def shutdown(self):
         """Gracefully shuts down the backtester and prints results."""
-        print("--- Shutting down backtester --- ")
+        logging.info("--- Shutting down backtester --- ")
         self.print_results()
 
     def print_results(self):
         """Prints the final backtest results and saves them to a CSV file."""
-        print("\n--- Backtest Results ---")
+        logging.info("\n--- Backtest Results ---")
         if not self.trades:
-            print("No trades were executed.")
+            logging.info("No trades were executed.")
             return
 
         trades_df = pd.DataFrame(self.trades)
@@ -392,18 +395,25 @@ class Backtester:
             retest_time = trade.get('time_at_retest')
 
             entry_info = f"{trade.get('entry_price', 0):.2f} @ {entry_time.strftime('%Y-%m-%d %H:%M:%S') if isinstance(entry_time, pd.Timestamp) else 'N/A'}"
-            exit_info = f"{trade.get('exit_reason', 'N/A')} @ {exit_time.strftime('%Y-%m-%d %H:%M:%S') if isinstance(exit_time, pd.Timestamp) else 'N/A'}"
-            break_time_str = break_time.strftime('%Y-%m-%d %H:%M:%S') if isinstance(break_time, pd.Timestamp) else 'N/A'
-            retest_time_str = retest_time.strftime('%Y-%m-%d %H:%M:%S') if isinstance(retest_time, pd.Timestamp) else 'N/A'
+            et_tz = pytz.timezone('America/New_York')
+            entry_time_et = entry_time.astimezone(et_tz).strftime('%Y-%m-%d %H:%M:%S') if isinstance(entry_time, pd.Timestamp) else 'N/A'
+            exit_time_et = exit_time.astimezone(et_tz).strftime('%Y-%m-%d %H:%M:%S') if isinstance(exit_time, pd.Timestamp) else 'N/A'
+            break_time_et = break_time.astimezone(et_tz).strftime('%Y-%m-%d %H:%M:%S') if isinstance(break_time, pd.Timestamp) else 'N/A'
+            retest_time_et = retest_time.astimezone(et_tz).strftime('%Y-%m-%d %H:%M:%S') if isinstance(retest_time, pd.Timestamp) else 'N/A'
+
+            exit_info = f"{trade.get('exit_reason', 'N/A')} @ {exit_time_et}"
+            break_time_str = break_time_et
+            retest_time_str = retest_time_et
 
             csv_data.append({
                 'Ticker': trade['symbol'],
-                'Levels (PDH, PDL, PMH, PML)': trade.get('levels_info', 'N/A'),
-                'Level Broken': trade.get('level_broken', 'N/A'),
+                'Levels (PDH, PDL, PMH, PML)': trade['levels_info'],
+                'Level Broken': trade['level_broken'],
                 'Time At Level Break': break_time_str,
                 'Time at Level Retest': retest_time_str,
                 'Entry Price & Time': entry_info,
-                'Exit Reason & Time': exit_info
+                'Exit Reason & Time': exit_info,
+                'Result': trade.get('result', 'N/A')
             })
 
         if csv_data:
@@ -413,17 +423,33 @@ class Backtester:
             end_str = self.end_date.strftime('%Y%m%d')
             csv_filename = f"backtest_results_{start_str}_to_{end_str}.csv"
             csv_df.to_csv(csv_filename, index=False)
-            print(f"\nBacktest results saved to {csv_filename}")
+            logging.info(f"\nBacktest results saved to {csv_filename}")
         # --- End CSV Generation ---
 
-        print(f"\nStarting Balance:   ${self.initial_balance:,.2f}")
-        print(f"Ending Balance:     ${self.balance:,.2f}")
-        print(f"Total P/L:          ${total_pnl:,.2f}")
-        print(f"Total Trades:       {total_trades}")
-        print(f"Wins:               {wins}")
-        print(f"Losses:             {losses}")
-        print(f"Win Rate:           {win_rate:.2f}%")
+        logging.info(f"\nStarting Balance:   ${self.initial_balance:,.2f}")
+        logging.info(f"Ending Balance:     ${self.balance:,.2f}")
+        logging.info(f"Total P/L:          ${total_pnl:,.2f}")
+        logging.info(f"Total Trades:       {total_trades}")
+        logging.info(f"Wins:               {wins}")
+        logging.info(f"Losses:             {losses}")
+        logging.info(f"Win Rate:           {win_rate:.2f}%")
+import logging
+from datetime import datetime
+
 if __name__ == '__main__':
+    # ==================================================================
+    # --- Logging Config --- 
+    # ==================================================================
+    log_filename = f"backtest_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(message)s',
+        handlers=[
+            logging.FileHandler(log_filename),
+            logging.StreamHandler()
+        ]
+    )
+    # ==================================================================
     # ==================================================================
     # --- User Config ---
     # ==================================================================
@@ -433,7 +459,7 @@ if __name__ == '__main__':
     # Define the date range for the backtest.
     # The backtester will run on the data available within this range.
     # Adjusted to match the available Databento data file.
-    backtest_start_date = datetime(2025, 6, 1)
+    backtest_start_date = datetime(2020, 6, 28)
     backtest_end_date = datetime(2025, 6, 27)
 
     # Define the initial account balance for the simulation.
@@ -441,11 +467,11 @@ if __name__ == '__main__':
     account_balance = 50000.0
     # ==================================================================
 
-    print("--- Backtester Configuration ---")
-    print(f"Symbols: {symbols_to_test}")
-    print(f"Period: {backtest_start_date.strftime('%Y-%m-%d')} to {backtest_end_date.strftime('%Y-%m-%d')}")
-    print(f"Initial Balance: ${account_balance:,.2f}")
-    print("---------------------------------")
+    logging.info("--- Backtester Configuration ---")
+    logging.info(f"Symbols: {symbols_to_test}")
+    logging.info(f"Period: {backtest_start_date.strftime('%Y-%m-%d')} to {backtest_end_date.strftime('%Y-%m-%d')}")
+    logging.info(f"Initial Balance: ${account_balance:,.2f}")
+    logging.info("---------------------------------")
 
     # Initialize and run the backtester
     backtester = Backtester(
