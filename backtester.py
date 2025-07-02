@@ -271,11 +271,13 @@ class Backtester:
                         'rejection_candle': retest_context['rejection_candle'],
                         'symbol': symbol,
                         'latest_bar': latest_bar,
-                        'latest_emas': latest_emas
+                        'latest_emas': latest_emas,
+                        'level_broken': break_event['level']
                     }
 
-                    if not state['pattern_validator'].validate_signal(trade_side, context):
-                        logging.info(f"  -> [{timestamp.time()}] Post-confirmation validation failed. Resetting.")
+                    is_valid, reason = state['pattern_validator'].validate_signal(trade_side, context)
+                    if not is_valid:
+                        logging.info(f"  -> [{timestamp.time()}] Post-confirmation validation failed: {reason}. Resetting.")
                         state['state'] = 'AWAITING_BREAK'
                         state['retest_context'] = None
                         continue
@@ -324,25 +326,7 @@ class Backtester:
                     self.close_trade(state, latest_bar, 'TP')
                     continue
 
-                # Check for EMA trail stop logic
-                if self.take_profit_manager.check_ema_trail_stop(latest_bar, trade['side'], latest_emas):
-                    ema_13 = latest_emas.get('ema_13', 'N/A')
-                    logging.info(f"  -> [{timestamp.time()}] {symbol} EMA TRAIL TRIGGERED. Close: {latest_bar['close']:.2f}, EMA_13: {ema_13:.2f}. Entering Probation.")
-                    state['state'] = 'EMA_PROBATION'
-                    state['active_trade']['probation_candle_timestamp'] = latest_bar.name
 
-            # --- STATE: EMA_PROBATION ---
-            elif current_state == 'EMA_PROBATION':
-                trade = state['active_trade']
-                # Ensure we are on a new candle before checking probation exit
-                if latest_bar.name > trade['probation_candle_timestamp']:
-                    if self.take_profit_manager.check_ema_trail_stop(latest_bar, trade['side'], latest_emas):
-                        # Condition persists, exit the trade
-                        self.close_trade(state, latest_bar, 'EMA_TRAIL')
-                    else:
-                        # Condition resolved, return to trade
-                        # logging.info(f"  -> [{timestamp.time()}] {symbol} EMA Probation resolved. Returning to trade.")
-                        state['state'] = 'IN_TRADE'
 
     def close_trade(self, state, exit_bar, exit_reason):
         """Records the result of a closed trade and updates balance."""
@@ -459,8 +443,8 @@ if __name__ == '__main__':
     # Define the date range for the backtest.
     # The backtester will run on the data available within this range.
     # Adjusted to match the available Databento data file.
-    backtest_start_date = datetime(2020, 6, 28)
-    backtest_end_date = datetime(2025, 6, 27)
+    backtest_start_date = datetime(2024, 7, 1)
+    backtest_end_date = datetime(2024, 8, 31)
 
     # Define the initial account balance for the simulation.
     # Increased for a longer-term test.

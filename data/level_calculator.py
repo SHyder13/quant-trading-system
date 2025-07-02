@@ -52,7 +52,10 @@ class LevelCalculator:
         for date_candidate in available_past_dates:
             day_data = intraday_data_et[intraday_data_et.index.date == date_candidate]
             if not day_data.empty:
-                rth_data = day_data.between_time('09:30', '16:00')
+                # Explicitly define RTH window for clarity and robustness
+                rth_start = pd.Timestamp(date_candidate, tz=et_tz).replace(hour=9, minute=30, second=0)
+                rth_end = pd.Timestamp(date_candidate, tz=et_tz).replace(hour=16, minute=0, second=0)
+                rth_data = day_data[(day_data.index >= rth_start) & (day_data.index <= rth_end)]
                 if not rth_data.empty:
                     # Filter out non-positive prices before calculating min/max
                     valid_rth_data = rth_data[rth_data['low'] > 0]
@@ -69,7 +72,10 @@ class LevelCalculator:
         # --- Calculate PMH/PML from Current Day's Premarket ---
         current_day_data = intraday_data_et[intraday_data_et.index.date == simulation_date_et.date()]
         if not current_day_data.empty:
-            premarket_data = current_day_data.between_time('04:00', '09:29')
+            # Explicitly define Pre-Market window
+            pm_start = simulation_date_et.replace(hour=4, minute=0, second=0)
+            pm_end = simulation_date_et.replace(hour=9, minute=29, second=59)
+            premarket_data = current_day_data[(current_day_data.index >= pm_start) & (current_day_data.index <= pm_end)]
             if not premarket_data.empty:
                 # Filter out non-positive prices before calculating min/max
                 valid_premarket_data = premarket_data[premarket_data['low'] > 0]

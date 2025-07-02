@@ -8,18 +8,17 @@ class PatternValidator:
 
     def validate_signal(self, signal, context):
         """
-        Validates the quality of a generated signal based on market bias, volume, and candlestick patterns.
+        Validates the quality of a generated signal based on market bias and a simplified confirmation rule.
+        Returns a tuple: (is_valid: bool, reason: str)
         """
         # Unpack context
-        breakout_candle = context.get('breakout_candle')
-        rejection_candle = context.get('rejection_candle')
         symbol = context.get('symbol')
         latest_bar = context.get('latest_bar')
         latest_emas = context.get('latest_emas')
+        level_broken = context.get('level_broken')
 
-        if breakout_candle is None or rejection_candle is None or symbol is None or latest_bar is None or latest_emas is None:
-            print("Validation FAILED: Missing context for pattern validation.")
-            return False
+        if symbol is None or latest_bar is None or latest_emas is None or level_broken is None:
+            return False, "Missing context for pattern validation."
 
         signal_direction = signal
 
@@ -27,47 +26,28 @@ class PatternValidator:
         current_price = latest_bar['close']
         ema_200 = latest_emas.get('ema_200')
         if not ema_200:
-            print(f"Validation FAILED ({symbol}): 200 EMA not available.")
-            return False
+            return False, f"200 EMA not available for {symbol}."
 
-        # Calculate tolerance band
         tolerance_amount = ema_200 * self.ema_tolerance
         upper_band = ema_200 + tolerance_amount
         lower_band = ema_200 - tolerance_amount
 
         if signal_direction == 'BUY' and current_price < lower_band:
-            print(f"Validation FAILED ({symbol}): BUY signal is below 200 EMA tolerance band ({current_price:.2f} < {lower_band:.2f}). Bias is BEARISH.")
-            return False
+            reason = f"BUY signal below 200 EMA tolerance band ({current_price:.2f} < {lower_band:.2f}). Bias is BEARISH."
+            return False, reason
         
         if signal_direction == 'SELL' and current_price > upper_band:
-            print(f"Validation FAILED ({symbol}): SELL signal is above 200 EMA tolerance band ({current_price:.2f} > {upper_band:.2f}). Bias is BULLISH.")
-            return False
-        
-        print(f"- Validation PASSED ({symbol}): Signal direction ({signal_direction}) aligns with 200 EMA bias.")
+            reason = f"SELL signal above 200 EMA tolerance band ({current_price:.2f} > {upper_band:.2f}). Bias is BULLISH."
+            return False, reason
 
-        # 2. Volume Check
-        min_volume = self.min_volume_map.get(symbol)
-        if breakout_candle['volume'] < min_volume:
-            print(f"Validation FAILED ({symbol}): Breakout volume ({breakout_candle['volume']}) is below minimum ({min_volume}).")
-            return False
-        print(f"- Validation PASSED ({symbol}): Breakout volume is sufficient.")
-        
-        # 3. Candlestick Pattern Check
-        # The candle being checked is the one that triggers the trade (the confirmation candle)
+        # 2. Confirmation Check (New Simplified Rule)
         entry_candle = latest_bar
-
-        # If the signal is already confirmed, we can relax the pattern rules.
-        # The primary check is just that the entry candle moves in the right direction.
         if signal_direction == 'BUY':
             if entry_candle['close'] <= entry_candle['open']:
-                print(f"Validation FAILED ({symbol}): Post-confirmation entry candle was not bullish.")
-                return False
-            print(f"- Validation PASSED ({symbol}): Post-confirmation entry candle is bullish.")
+                return False, f"Confirmation failed: Entry candle was not bullish (Close: {entry_candle['close']:.2f} <= Open: {entry_candle['open']:.2f})."
 
         elif signal_direction == 'SELL':
             if entry_candle['close'] >= entry_candle['open']:
-                print(f"Validation FAILED ({symbol}): Post-confirmation entry candle was not bearish.")
-                return False
-            print(f"- Validation PASSED ({symbol}): Post-confirmation entry candle is bearish.")
+                return False, f"Confirmation failed: Entry candle was not bearish (Close: {entry_candle['close']:.2f} >= Open: {entry_candle['open']:.2f})."
 
-        return True
+        return True, "Validation successful."
