@@ -9,8 +9,8 @@ class SessionManager:
         self.timezone = pytz.timezone('America/New_York')
         self.morning_start_time = datetime.datetime.strptime(self.strategy_config.MORNING_SESSION_START, '%H:%M').time()
         self.morning_end_time = datetime.datetime.strptime(self.strategy_config.MORNING_SESSION_END, '%H:%M').time()
-        self.afternoon_start_time = datetime.datetime.strptime(self.strategy_config.AFTERNOON_SESSION_START, '%H:%M').time()
-        self.afternoon_end_time = datetime.datetime.strptime(self.strategy_config.AFTERNOON_SESSION_END, '%H:%M').time()
+        self.afternoon_start_time = None  # Afternoon trading disabled
+        self.afternoon_end_time = None
 
     def get_current_time_et(self):
         """Returns the current time in the America/New_York timezone."""
@@ -33,13 +33,9 @@ class SessionManager:
         current_time = now_et.time()
         morning_start = datetime.datetime.strptime(self.strategy_config.MORNING_SESSION_START, '%H:%M').time()
         morning_end = datetime.datetime.strptime(self.strategy_config.MORNING_SESSION_END, '%H:%M').time()
-        afternoon_start = datetime.datetime.strptime(self.strategy_config.AFTERNOON_SESSION_START, '%H:%M').time()
-        afternoon_end = datetime.datetime.strptime(self.strategy_config.AFTERNOON_SESSION_END, '%H:%M').time()
-
         is_in_morning = morning_start <= current_time <= morning_end
-        is_in_afternoon = afternoon_start <= current_time <= afternoon_end
 
-        return is_in_morning or is_in_afternoon
+        return is_in_morning
 
     def get_current_session(self, current_time_et):
         """
@@ -56,8 +52,7 @@ class SessionManager:
         if self.morning_start_time <= current_time < self.morning_end_time:
             return 'morning'
         
-        if self.afternoon_start_time <= current_time < self.afternoon_end_time:
-            return 'afternoon'
+        
             
         return None
 

@@ -8,7 +8,7 @@ class SignalGenerator:
         self.timeout = timedelta(minutes=strategy_config.RETEST_TIMEOUT_MINUTES)
         self.active_break_info = None
 
-    def process_bar(self, bar, levels, latest_emas):
+    def process_bar(self, bar, levels):
         """
         Processes a new data bar to generate a trade signal.
         This is a stateless process that checks for a break, and if one is active, checks for a retest.
@@ -16,7 +16,7 @@ class SignalGenerator:
         """
         # If we are not waiting for a retest, look for a new break.
         if self.active_break_info is None:
-            break_info = self.break_detector.check_for_break(bar, levels, latest_emas)
+            break_info = self.break_detector.check_for_break(bar, levels)
             if break_info:
                 print(f"[{bar.name}] Break detected: {break_info['type']}. Now watching for retest.")
                 self.active_break_info = {
@@ -42,7 +42,7 @@ class SignalGenerator:
             
             # Check for the retest signal
             pivot_candle, rejection_candle, confluence_type = self.retest_detector.check_for_retest(
-                bar, self.active_break_info['broken_level'], break_direction, latest_emas
+                bar, self.active_break_info['broken_level'], break_direction
             )
 
             if rejection_candle is not None:

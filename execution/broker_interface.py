@@ -1,5 +1,6 @@
 import requests
 import logging
+import pandas as pd
 from datetime import datetime, timedelta
 
 class BrokerInterface:
@@ -145,6 +146,47 @@ class BrokerInterface:
             return data['bars'][-1] # Return the most recent bar
         else:
             logging.error(f"Could not fetch latest bar for {symbol}. Response: {data}")
+            return None
+
+    def get_historical_bars(self, symbol, start_time, end_time, timeframe_minutes=1):
+        """Fetches historical bars for a given symbol and time range."""
+        print(f"Fetching historical bars for {symbol} from {start_time} to {end_time}...")
+        
+        contract_id = self._get_contract_id(symbol)
+        if not contract_id:
+            return None
+
+        bar_request_details = {
+            'contractId': contract_id,
+            'unit': 2,  # 2 = Minute
+            'unitNumber': timeframe_minutes,
+            'startTime': start_time.isoformat() + "Z",
+            'endTime': end_time.isoformat() + "Z",
+            'includePartialBar': False,
+            'live': False,
+            'limit': 50000
+        }
+
+        payload = bar_request_details.copy()
+        payload['request'] = bar_request_details
+
+        data = self._make_request('POST', 'history/retrieveBars', json=payload)
+        
+        if data and data.get('success') and 'bars' in data:
+            if not data['bars']:
+                logging.warning(f"No bars returned for {symbol} for the requested period.")
+                return pd.DataFrame()
+            
+            df = pd.DataFrame(data['bars'])
+            df['timestamp'] = pd.to_datetime(df['t'])
+            df = df.set_index('timestamp')
+            df.rename(columns={'o': 'open', 'h': 'high', 'l': 'low', 'c': 'close', 'v': 'volume'}, inplace=True)
+            df = df[['open', 'high', 'low', 'close', 'volume']]
+            # The index is already UTC-aware from pd.to_datetime, no need to localize.
+            print(f"Successfully fetched {len(df)} bars for {symbol}.")
+            return df
+        else:
+            logging.error(f"Could not fetch historical bars for {symbol}. Response: {data}")
             return None
 
     def _get_contract_details(self, symbol):

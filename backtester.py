@@ -14,7 +14,6 @@ from config import main_config
 # Switching to Databento for historical data
 from data.databento_loader import DatabentoLoader
 from data.level_calculator import LevelCalculator
-from data.ema_guides import EMAGuides
 
 from strategy.break_detector import BreakDetector
 from strategy.retest_detector import RetestDetector
@@ -48,7 +47,6 @@ class Backtester:
             file_paths=main_config.DATABENTO_FILE_PATHS,
         )
         self.level_calculator = LevelCalculator()
-        self.ema_calculator = EMAGuides()
         self.stop_loss_manager = StopLossManager(risk_config)
         self.take_profit_manager = TakeProfitManager(risk_config)
         self.position_sizer = PositionSizer(risk_config)
@@ -56,8 +54,8 @@ class Backtester:
         # Trading session times
         self.morning_start = datetime.strptime(strategy_config.MORNING_SESSION_START, '%H:%M').time()
         self.morning_end = datetime.strptime(strategy_config.MORNING_SESSION_END, '%H:%M').time()
-        self.afternoon_start = datetime.strptime(strategy_config.AFTERNOON_SESSION_START, '%H:%M').time()
-        self.afternoon_end = datetime.strptime(strategy_config.AFTERNOON_SESSION_END, '%H:%M').time()
+        self.afternoon_start = None  # Afternoon trading disabled
+        self.afternoon_end = None
 
         # Per-symbol components - Aligned with main.py
         self.symbol_states = {}
@@ -165,16 +163,13 @@ class Backtester:
 
             # Session check
             is_morning = self.morning_start <= current_time_et <= self.morning_end
-            is_afternoon = self.afternoon_start <= current_time_et <= self.afternoon_end
-            if not (is_morning or is_afternoon):
+            if not is_morning:
                 continue
-            current_session = 'morning' if is_morning else 'afternoon'
+            current_session = 'morning'
 
             # Get historical view for calculations
             historical_view = self.all_data[symbol][self.all_data[symbol].index <= timestamp]
             latest_bar = historical_view.iloc[-1]
-            latest_emas = self.ema_calculator.get_latest_ema_values(historical_view)
-            if not latest_emas: continue
 
             # --- STATE MACHINE LOGIC --- #
 
@@ -211,8 +206,7 @@ class Backtester:
                     if resist: active_levels[[k for k, v in key_levels.items() if v == min(resist.values())][0]] = min(resist.values())
                 if not active_levels: continue
 
-                session_ema = 13 if current_session == 'morning' else 48
-                break_event = state['break_detector'].check_for_break(latest_bar, active_levels, latest_emas, session_ema)
+                break_event = state['break_detector'].check_for_break(latest_bar, active_levels)
                 if break_event:
                     logging.info(f"  >>> BREAK_EVENT {symbol} {timestamp}: O={latest_bar['open']:.2f} H={latest_bar['high']:.2f} L={latest_bar['low']:.2f} C={latest_bar['close']:.2f} vs {break_event['level_name'].upper()} {break_event['level_value']:.2f}")
                     name = break_event['level_name'].upper()
@@ -231,7 +225,7 @@ class Backtester:
 
                 break_event = state['last_break_event']
                 break_dir = 'up' if 'up' in break_event['type'] else 'down'
-                pivot, reject, conf_type = state['retest_detector'].check_for_retest(latest_bar, break_event['level'], break_dir, latest_emas)
+                pivot, reject, conf_type = state['retest_detector'].check_for_retest(latest_bar, break_event['level'], break_dir)
 
                 if pivot is not None and reject is not None:
                     logging.info(f"  -> [{timestamp.time()}] RETEST DETECTED on {symbol} at {break_event['level']:.2f}. Waiting for confirmation candle.")
@@ -271,7 +265,6 @@ class Backtester:
                         'rejection_candle': retest_context['rejection_candle'],
                         'symbol': symbol,
                         'latest_bar': latest_bar,
-                        'latest_emas': latest_emas,
                         'level_broken': break_event['level']
                     }
 
@@ -334,12 +327,8 @@ class Backtester:
         exit_price = 0
         if exit_reason == 'TP': exit_price = trade['take_profit']
         elif exit_reason == 'SL': exit_price = trade['stop_loss']
-        elif exit_reason == 'EMA_TRAIL': exit_price = exit_bar['close']
 
         pnl = (exit_price - trade['entry_price']) if trade['side'] == 'BUY' else (trade['entry_price'] - exit_price)
-
-        if exit_reason == 'EMA_TRAIL':
-            exit_reason = f"EMA_TRAIL ({'PROFIT' if pnl > 0 else 'LOSS'})"
         pnl_dollars = pnl * market_config.DOLLAR_PER_POINT[trade['symbol']] * trade['quantity']
         self.balance += pnl_dollars
 
@@ -443,8 +432,8 @@ if __name__ == '__main__':
     # Define the date range for the backtest.
     # The backtester will run on the data available within this range.
     # Adjusted to match the available Databento data file.
-    backtest_start_date = datetime(2024, 7, 1)
-    backtest_end_date = datetime(2024, 8, 31)
+    backtest_start_date = datetime(2024, 1, 1)
+    backtest_end_date = datetime(2024, 12, 31)
 
     # Define the initial account balance for the simulation.
     # Increased for a longer-term test.

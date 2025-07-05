@@ -1,19 +1,18 @@
+import logging
+
 class BreakDetector:
     def __init__(self, strategy_config, symbol, logger=None):
         self.strategy_config = strategy_config
         self.symbol = symbol
-        self.logger = logger
-        self.confirmation_candles = strategy_config.BREAK_CONFIRMATION_CANDLES
-        self.ema_confluence_tolerance = self.strategy_config.EMA_CONFLUENCE_TOLERANCE_POINTS.get(self.symbol)
-        if self.ema_confluence_tolerance is None:
-            raise ValueError(f"EMA confluence tolerance not configured for symbol: {self.symbol}")
-
-        # State tracking
+        self.logger = logging.getLogger(self.__class__.__name__)
+        self.break_confirmation_candles = self.strategy_config.BREAK_CONFIRMATION_CANDLES
+        self.conviction_candle_body_ratio = self.strategy_config.CONVICTION_CANDLE_BODY_RATIO.get(self.symbol)
+        self.min_breakout_volume = self.strategy_config.MIN_BREAKOUT_VOLUME.get(self.symbol)
+        self.candle_closes_since_break = 0
+        self.previous_bar = None
         self.break_above_confirmations = 0
         self.break_below_confirmations = 0
         self.last_break_type = None
-        self.previous_bar = None
-        self.previous_emas = None
         self.last_pivot_candle = None
         
         # Fix: Initialize missing attributes to prevent AttributeError
@@ -27,7 +26,7 @@ class BreakDetector:
         """Returns the last identified pivot candle."""
         return self.last_pivot_candle
 
-    def check_for_break(self, latest_bar, levels, latest_emas, session_ema_period=13):
+    def check_for_break(self, latest_bar, levels):
         """
         Checks for a single-candle break of a key level.
         A break is defined as the close price moving beyond the level, and it must
@@ -37,34 +36,38 @@ class BreakDetector:
             return None
 
         close_price = latest_bar['close']
+        event = None
 
         # A break can only be confirmed if we have a previous bar to compare against.
-        if self.previous_bar is None:
-            self.previous_bar = latest_bar
-            return None
+        if self.previous_bar is not None:
+            # Check for break of resistance levels (e.g., pdh, pmh)
+            for level_name, level_value in levels.items():
+                if level_name.endswith('h'):  # Identifies resistance levels like 'pdh', 'pmh'
+                    print(f"Checking for break up of {level_name} at {level_value} with close price {close_price} and previous close {self.previous_bar['close']}", flush=True)
+                    if close_price > level_value and self.previous_bar['close'] <= level_value:
+                        print(f"*** BREAK UP DETECTED of {level_name} at {level_value} with close price {close_price} ***", flush=True)
+                        event = {'type': 'up', 'level_name': level_name, 'level_value': level_value, 'candle': latest_bar}
+                        break  # Exit loop once break is found
 
-        # Check for break of resistance levels (e.g., pdh, pmh)
-        for level_name, level_value in levels.items():
-            if level_name.endswith('h'):  # Identifies resistance levels like 'pdh', 'pmh'
-                if close_price > level_value and self.previous_bar['close'] <= level_value:
-                    event = {'type': 'up', 'level_name': level_name, 'level_value': level_value, 'candle': latest_bar}
-                    self.previous_bar = latest_bar # Update state before returning
-                    return event
+            # Check for break of support levels if no resistance break was found
+            if not event:
+                for level_name, level_value in levels.items():
+                    if level_name.endswith('l'):  # Identifies support levels like 'pdl', 'pml'
+                        print(f"Checking for break down of {level_name} at {level_value} with close price {close_price} and previous close {self.previous_bar['close']}", flush=True)
+                        if close_price < level_value and self.previous_bar['close'] >= level_value:
+                            print(f"*** BREAK DOWN DETECTED of {level_name} at {level_value} with close price {close_price} ***", flush=True)
+                            event = {'type': 'down', 'level_name': level_name, 'level_value': level_value, 'candle': latest_bar}
+                            break # Exit loop once break is found
 
-        # Check for break of support levels (e.g., pdl, pml)
-        for level_name, level_value in levels.items():
-            if level_name.endswith('l'):  # Identifies support levels like 'pdl', 'pml'
-                if close_price < level_value and self.previous_bar['close'] >= level_value:
-                    event = {'type': 'down', 'level_name': level_name, 'level_value': level_value, 'candle': latest_bar}
-                    self.previous_bar = latest_bar # Update state before returning
-                    return event
+        # --- A+ Setup: Single-Candle Break-Retest-Confirm Pattern ---
+        is_high_conviction = False
 
-        # No break detected, update the previous bar for the next iteration
+        # Update previous bar for the next iteration's checks
         self.previous_bar = latest_bar
-        return None
+        
+        return event
 
     def _check_confluence_break(self, latest_bar, levels, previous_emas, session_ema_period):
-        """Checks for a break that occurs immediately after a bounce from the session-specific EMA."""
         if not previous_emas:
             return None
 

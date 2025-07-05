@@ -21,7 +21,6 @@ else:
     from execution.broker_interface import BrokerInterface
 from data.level_calculator import LevelCalculator
 from data.session_manager import SessionManager
-from data.ema_guides import EMAGuides
 
 from strategy.level_detector import LevelDetector
 from strategy.break_detector import BreakDetector
@@ -98,7 +97,6 @@ def main():
     market_fetcher = MarketDataFetcher(session_token=broker_interface.session_token)
     level_calculator = LevelCalculator()
     level_detector = LevelDetector(level_calculator)
-    ema_calculator = EMAGuides()
     session_manager = SessionManager(market_config, strategy_config)
     pattern_validator = PatternValidator()
     stop_loss_manager = StopLossManager(risk_config)
@@ -176,21 +174,11 @@ def main():
                     continue
 
                 latest_bar = historical_data.iloc[-1]
-                latest_emas = ema_calculator.get_latest_ema_values(historical_data)
-                if not latest_emas:
-                    print(f"Could not calculate EMAs for {symbol}. Skipping cycle.")
-                    continue
-                
                 current_price = latest_bar['close']
-                ema_200 = latest_emas.get('ema_200', 0)
-                bias = "BULLISH" if current_price > ema_200 and ema_200 > 0 else "BEARISH"
-                print(f"Latest Data: Price={current_price:.2f} | Bias: {bias}")
+                print(f"Latest Data: Price={current_price:.2f}")
 
                 # --- STATE: AWAITING_BREAK ---
                 if current_state == 'AWAITING_BREAK':
-                    session_ema_period = 13 if current_session == 'morning' else 48
-                    print(f"Using EMA_{session_ema_period} for confluence checks.")
-
                     support_levels = {k: v for k, v in key_levels.items() if v < current_price}
                     resistance_levels = {k: v for k, v in key_levels.items() if v > current_price}
                     closest_support = max(support_levels.values()) if support_levels else None
@@ -210,7 +198,7 @@ def main():
                     
                     logger.info(f"[{symbol}] Watching active levels: {active_levels}")
 
-                    break_event = symbol_states[symbol]['break_detector'].check_for_break(latest_bar, active_levels, latest_emas, session_ema_period)
+                    break_event = symbol_states[symbol]['break_detector'].check_for_break(latest_bar, active_levels)
                     if break_event:
                         broken_level_name = [name for name, price in active_levels.items() if price == break_event['level']][0].upper()
                         print(f"*** BREAK DETECTED: {symbol} broke {broken_level_name} at {break_event['level']:.2f} ***")
@@ -231,7 +219,7 @@ def main():
                     break_event = symbol_states[symbol]['last_break_event']
                     break_direction = 'up' if 'up' in break_event['type'] else 'down'
                     
-                    pivot_candle, rejection_candle, confluence_type = symbol_states[symbol]['retest_detector'].check_for_retest(latest_bar, break_event['level'], break_direction, latest_emas)
+                    pivot_candle, rejection_candle, confluence_type = symbol_states[symbol]['retest_detector'].check_for_retest(latest_bar, break_event['level'], break_direction)
 
                     if pivot_candle is not None and rejection_candle is not None:
                         level_name = break_event.get('name', 'level')
@@ -246,8 +234,7 @@ def main():
                             'pivot_candle': pivot_candle,
                             'rejection_candle': rejection_candle,
                             'symbol': symbol,
-                            'latest_bar': latest_bar,
-                            'latest_emas': latest_emas
+                            'latest_bar': latest_bar
                         }
 
                         is_valid_signal = pattern_validator.validate_signal(trade_side, validation_context)
@@ -299,60 +286,8 @@ def main():
                         symbol_states[symbol]['state'] = 'AWAITING_BREAK'
                         continue
 
-                    # NOTE: The current logic only handles an EMA-based trailing stop.
-                    # A complete implementation would also need to poll the broker
-                    # to check if the SL/TP bracket order has been filled.
-
-                    # Instantiate the TakeProfitManager to check for EMA trail
-                    tp_manager = TakeProfitManager(risk_config)
-
-                    # Check if the position should be exited based on the 13 EMA rule
-                    should_exit_on_ema = tp_manager.check_ema_trail_stop(
-                        latest_bar=latest_bar,
-                        position_side=trade_details['side'],
-                        latest_emas=latest_emas
-                    )
-
-                    trade_status = trade_details.get('status', 'ACTIVE')
-
-                    # --- ACTIVE STATUS ---
-                    if trade_status == 'ACTIVE':
-                        if should_exit_on_ema:
-                            # Instead of exiting, go into probation
-                            print(f"!!! 13 EMA PROBATION STARTED for {symbol} {trade_details['side']} trade. Waiting for next candle to confirm. !!!")
-                            trade_details['status'] = 'EMA_PROBATION'
-                            trade_details['probation_candle_timestamp'] = latest_bar.name
-                        else:
-                            print(f"Trade for {symbol} remains active. Monitoring...")
-
-                    # --- PROBATION STATUS ---
-                    elif trade_status == 'EMA_PROBATION':
-                        # Check if we are on a new candle since probation started
-                        if latest_bar.name > trade_details['probation_candle_timestamp']:
-                            print(f"Confirming 13 EMA exit for {symbol} on new candle...")
-                            if should_exit_on_ema:
-                                # The next candle also failed to reclaim, so exit
-                                print(f"!!! EXIT CONFIRMED: {symbol} failed to reclaim 13 EMA. Closing position. !!!")
-                                order_manager = OrderManager(broker_interface, broker_interface.get_account_balance())
-                                order_manager.close_position(
-                                    symbol=symbol,
-                                    side=trade_details['side'],
-                                    quantity=trade_details['quantity'],
-                                    original_order_id=trade_details['order_id']
-                                )
-                                # Update daily status assuming EMA trail is a loss for afternoon session purposes
-                                symbol_states[symbol]['daily_trade_status']['last_trade_outcome'] = 'loss'
-                                
-                                # Reset state for the symbol
-                                symbol_states[symbol]['state'] = 'AWAITING_BREAK'
-                                symbol_states[symbol]['active_trade'] = None
-                            else:
-                                # Price reclaimed the 13 EMA, trade is safe
-                                print(f"*** RECLAIMED: {symbol} has reclaimed the 13 EMA. Trade remains active. ***")
-                                trade_details['status'] = 'ACTIVE'
-                                trade_details.pop('probation_candle_timestamp', None) # Remove probation timestamp
-                        else:
-                            print(f"Awaiting next candle to confirm 13 EMA probation for {symbol}...")
+                    # NOTE: The current implementation polls the broker to check if the SL/TP bracket order has been filled.
+                    print(f"Trade for {symbol} remains active. Monitoring...")
 
             # Wait before the next cycle
             print("\nCycle complete. Waiting for next interval...")

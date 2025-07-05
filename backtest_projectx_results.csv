@@ -1,0 +1,2 @@
+symbol,entry_time,entry_price,side,stop_loss,take_profit,quantity,status,levels_info,level_broken,time_at_break,time_at_retest,exit_time,exit_price,pnl,exit_reason
+MNQ,2025-07-01 10:37:00-04:00,22728.25,SELL,22791.0,22602.75,2,CLOSED,"PDH:22934.0, PDL:22780.0, PMH:22858.5, PML:22756.0",PML,2025-07-01 10:32:00-04:00,2025-07-01 10:36:00-04:00,2025-07-01 11:12:00-04:00,22602.75,251.0,TAKE_PROFIT
