@@ -4,3 +4,8 @@ numpy
 databento
 requests
 loguru
+pytz
+
+# Real-time Communication
+pysignalr
+websockets

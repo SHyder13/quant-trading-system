@@ -13,6 +13,7 @@ class PatternValidator:
         self.logger = logger or logging.getLogger(self.__class__.__name__)
         self.min_volume_map = strategy_config.MIN_BREAKOUT_VOLUME
         self.conviction_ratio_map = strategy_config.CONVICTION_CANDLE_BODY_RATIO
+        self.min_distance_from_level = strategy_config.MIN_DISTANCE_FROM_LEVEL
 
     def validate_signal(self, signal_direction: str, context: dict) -> Tuple[bool, str]:
         """
@@ -41,6 +42,15 @@ class PatternValidator:
             return False, reason
 
 
+                # --- 3. Confluence Check ---
+        min_dist = self.min_distance_from_level.get(symbol, 0)
+        is_conflicting, conflict_reason = self._check_level_confluence(
+            signal_direction, confirmation_candle, context.get('levels', {}), min_dist
+        )
+        if is_conflicting:
+            self.logger.warning(f"Validation failed: {conflict_reason}")
+            return False, conflict_reason
+
         # --- 4. Confirmation Candle Check ---
         if signal_direction == 'BUY':
             if confirmation_candle['close'] <= confirmation_candle['open']:
@@ -55,3 +65,36 @@ class PatternValidator:
 
         self.logger.info(f"Signal for {symbol} validation successful.")
         return True, "Validation successful."
+
+    def _check_level_confluence(self, signal_direction: str, entry_candle: dict, levels: dict, min_dist: float) -> Tuple[bool, str]:
+        """
+        Checks if the trade entry is too close to other significant levels.
+
+        Args:
+            signal_direction: The direction of the trade ('BUY' or 'SELL').
+            entry_candle: The candle on which the trade would be entered.
+            levels: A dictionary of other key levels (e.g., PDH, PDL).
+            min_dist: The minimum required distance from other levels.
+
+        Returns:
+            A tuple: (is_conflicting: bool, reason: str).
+        """
+        entry_price = entry_candle['close']
+
+        for level_name, level_value in levels.items():
+            if level_value is None: 
+                continue
+
+            distance = abs(entry_price - level_value)
+
+            if signal_direction == 'BUY':
+                # For a long, check for resistance levels above that are too close
+                if entry_price < level_value and distance < min_dist:
+                    return True, f"Entry price {entry_price} is too close to resistance level {level_name} at {level_value}."
+            
+            elif signal_direction == 'SELL':
+                # For a short, check for support levels below that are too close
+                if entry_price > level_value and distance < min_dist:
+                    return True, f"Entry price {entry_price} is too close to support level {level_name} at {level_value}."
+
+        return False, ""

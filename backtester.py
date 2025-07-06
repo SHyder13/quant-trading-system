@@ -266,7 +266,8 @@ class Backtester:
                         'rejection_candle': retest_context['rejection_candle'],
                         'symbol': symbol,
                         'latest_bar': latest_bar,
-                        'level_broken': break_event['level']
+                        'level_broken': break_event['level'],
+                        'levels': state['levels']
                     }
 
                     is_valid, reason = state['pattern_validator'].validate_signal(trade_side, context)
@@ -433,6 +434,8 @@ if __name__ == '__main__':
     # Define the date range for the backtest.
     # The backtester will run on the data available within this range.
     # Adjusted to match the available Databento data file.
+    #Earliest date is 2020-06-28
+    #Latest date is 2025-06-27
     backtest_start_date = datetime(2024, 1, 1)
     backtest_end_date = datetime(2024, 12, 31)
 
