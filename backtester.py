@@ -52,6 +52,7 @@ class Backtester:
         self.take_profit_manager = TakeProfitManager(risk_config)
         self.position_sizer = PositionSizer(risk_config)
 
+
         # Trading session times
         self.morning_start = datetime.strptime(strategy_config.MORNING_SESSION_START, '%H:%M').time()
         self.morning_end = datetime.strptime(strategy_config.MORNING_SESSION_END, '%H:%M').time()
@@ -283,6 +284,7 @@ class Backtester:
                         state['state'] = 'AWAITING_BREAK'; state['retest_context'] = None; continue
 
                     entry_price = latest_bar['close']
+
                     is_high_conviction = retest_context['confluence_type'] is not None
                     quantity = self.position_sizer.calculate_size(self.balance, entry_price, sl_price, symbol, is_high_conviction)
                     if quantity == 0: 
@@ -298,6 +300,7 @@ class Backtester:
                         'quantity': quantity, 'status': 'ACTIVE',
                         'levels_info': levels_str,
                         'level_broken': break_event['name'],
+                        'retested_level': break_event['level'],
                         'time_at_break': break_event['candle'].name,
                         'time_at_retest': retest_context['rejection_candle'].name
                     }
@@ -384,6 +387,7 @@ class Backtester:
                 'Ticker': trade['symbol'],
                 'Levels (PDH, PDL, PMH, PML)': trade['levels_info'],
                 'Level Broken': trade['level_broken'],
+                'Retested Level': trade.get('retested_level', 'N/A'),
                 'Time At Level Break': break_time_str,
                 'Time at Level Retest': retest_time_str,
                 'Entry Price & Time': entry_info,

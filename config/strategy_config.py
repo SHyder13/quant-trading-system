@@ -41,9 +41,10 @@ MAX_A_PLUS_ENTRY_EXTENSION = {
 # Minimum distance (in points) the entry price must be from other key levels (e.g., PDH/PDL)
 # to avoid entering trades in choppy, conflicting zones.
 MIN_DISTANCE_FROM_LEVEL = {
-    'MNQ': 20.0,
-    'MES': 3.0
+    'MES': 10.0,  # 10 points for MES
+    'MNQ': 20.0   # 20 points for MNQ
 }
+
 
 # The number of minutes to wait for a retest before invalidating the setup.
 RETEST_TIMEOUT_MINUTES = 60
