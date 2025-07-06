@@ -23,7 +23,7 @@ from risk.position_sizer import PositionSizer
 from risk.stop_loss_manager import StopLossManager
 from risk.take_profit_manager import TakeProfitManager
 
-from shared_components import SYSTEM_LOGGER
+import logging
 # from execution.broker_interface import BrokerInterface # No longer needed for backtesting
 
 class Backtester:
@@ -34,7 +34,8 @@ class Backtester:
         self.symbols = symbols
         self.initial_balance = initial_balance
         self.balance = initial_balance
-        self.logger = SYSTEM_LOGGER
+        self.logger = logging.getLogger(__name__)
+        self.logger = logging.getLogger(__name__)
 
         # Initialize components
         # self.broker = BrokerInterface(...) # No longer needed for backtesting
@@ -62,7 +63,7 @@ class Backtester:
         for symbol in self.symbols:
             self.symbol_states[symbol] = {
                 'state': 'AWAITING_BREAK',
-                'break_detector': BreakDetector(strategy_config, symbol, self.logger),
+                                'break_detector': BreakDetector(strategy_config, symbol, self.logger),
                 'retest_detector': RetestDetector(strategy_config, symbol),
                 'pattern_validator': PatternValidator(),
                 'last_break_event': None,

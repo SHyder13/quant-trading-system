@@ -60,9 +60,9 @@ class BacktesterProjectX:
         for symbol in self.symbols:
             self.symbol_states[symbol] = {
                 'state': 'AWAITING_BREAK',
-                'break_detector': BreakDetector(strategy_config, symbol),
-                'retest_detector': RetestDetector(strategy_config, symbol),
-                'pattern_validator': PatternValidator(),
+                'break_detector': BreakDetector(strategy_config, symbol, logger=self.logger),
+                'retest_detector': RetestDetector(strategy_config, symbol, logger=self.logger),
+                'pattern_validator': PatternValidator(logger=self.logger),
                 'last_break_event': None,
                 'retest_context': None,
                 'active_trade': None,
@@ -94,9 +94,14 @@ class BacktesterProjectX:
                 return
             self.all_data[symbol] = data
 
-        # Loop through each day in the specified date range
-        for current_date in pd.date_range(self.start_date, self.end_date):
-            self.run_day_simulation(current_date)
+        self.logger.info(f"--- Running ProjectX Backtest from {self.start_date} to {self.end_date} ---")
+
+        current_date = pd.to_datetime(self.start_date)
+        while current_date <= pd.to_datetime(self.end_date):
+            self.run_day_simulation(current_date.date())
+            current_date += timedelta(days=1)
+
+        self.shutdown()
 
     def run_day_simulation(self, current_date):
         """Simulates trading for a single day, mirroring main.py's logic."""
@@ -111,7 +116,7 @@ class BacktesterProjectX:
             self.symbol_states[symbol]['break_detector'].reset()
 
             et_tz = pytz.timezone('America/New_York')
-            simulation_day_in_et = pd.Timestamp(current_date.date(), tz=et_tz)
+            simulation_day_in_et = pd.Timestamp(current_date, tz=et_tz)
             
             cutoff_time_et = simulation_day_in_et + pd.Timedelta(hours=9, minutes=30)
             cutoff_time_utc = cutoff_time_et.tz_convert('UTC')
@@ -119,7 +124,7 @@ class BacktesterProjectX:
             start_slice_date = current_date - timedelta(days=4)
 
             data_for_levels = self.all_data[symbol][
-                (self.all_data[symbol].index.date >= start_slice_date.date()) &
+                (self.all_data[symbol].index.date >= start_slice_date) &
                 (self.all_data[symbol].index < cutoff_time_utc)
             ]
 
@@ -136,7 +141,7 @@ class BacktesterProjectX:
             self.symbol_states[symbol]['levels'] = levels
 
             # Correctly slice the data for the simulation day, respecting timezones.
-            day_start_et = pd.Timestamp(current_date.date(), tz='America/New_York')
+            day_start_et = pd.Timestamp(current_date, tz='America/New_York')
             day_end_et = day_start_et + pd.Timedelta(days=1)
 
             # Filter the data for the current day using the timezone-aware range.
@@ -152,46 +157,73 @@ class BacktesterProjectX:
             return
         combined_day_data = pd.concat(daily_data_frames).sort_index()
 
-        # --- FIX: Create a full time range and reindex to fill gaps, preventing crashes ---
-        et_tz = pytz.timezone('America/New_York')
-        day_start_dt = et_tz.localize(datetime.combine(current_date, self.morning_start))
-        day_end_dt = et_tz.localize(datetime.combine(current_date, self.regular_end))
-        
-        # Create a complete minute-by-minute index for the trading session.
-        full_time_range = pd.date_range(start=day_start_dt, end=day_end_dt, freq='T')
-        
-        reindexed_frames = []
-        # Group data by symbol, reindex each group to the full time range, and forward-fill gaps.
+        # --- Resample data to 2-minute timeframe ---
+        resampled_frames = []
         for symbol, group in combined_day_data.groupby('symbol'):
-            # Reindex to the complete time range, filling missing candles with the last known data.
-            # This ensures that the trade monitoring loop runs for every minute of the session.
-            reindexed_group = group.reindex(full_time_range, method='ffill')
-            
-            # Forward-filling can introduce NaNs at the beginning if the first data point is after the range starts.
-            # We also need to make sure the symbol column is correctly filled.
-            reindexed_group['symbol'].fillna(symbol, inplace=True)
-            reindexed_group.dropna(inplace=True) # Drop any rows that couldn't be filled (i.e., at the start)
-            
-            if not reindexed_group.empty:
-                reindexed_frames.append(reindexed_group)
+            # Resample to 2-minute timeframe, creating OHLC candles
+            resampled_group = group.resample('2min').agg({
+                'open': 'first',
+                'high': 'max',
+                'low': 'min',
+                'close': 'last',
+                'volume': 'sum'
+            }).dropna()  # Drop intervals with no data
 
-        if not reindexed_frames:
-            self.logger.warning(f"No valid data after reindexing for {current_date.strftime('%Y-%m-%d')}. Skipping day.")
+            if not resampled_group.empty:
+                resampled_group['symbol'] = symbol
+                resampled_frames.append(resampled_group)
+
+        if not resampled_frames:
+            self.logger.warning(f"No valid data after resampling to 2-minute candles for {current_date.strftime('%Y-%m-%d')}. Skipping day.")
             return
             
-        combined_day_data_filled = pd.concat(reindexed_frames).sort_index()
-        # --- End of FIX ---
+        combined_day_data_resampled = pd.concat(resampled_frames).sort_index()
+        # --- End of Resampling ---
 
-        # 2. Loop through each bar of the day using the filled data
-        self.logger.info("--- Starting Minute-by-Minute Simulation ---")
-        for timestamp, latest_bar in combined_day_data_filled.iterrows():
+        # Filter data to only include relevant trading hours (e.g., 9:30 AM to 4:00 PM ET)
+        et_tz = pytz.timezone('America/New_York')
+        filter_start_time = self.morning_start
+        filter_end_time = self.regular_end
+
+        filter_start_dt_et = et_tz.localize(datetime.combine(current_date, filter_start_time))
+        filter_end_dt_et = et_tz.localize(datetime.combine(current_date, filter_end_time))
+
+        # Apply the filter
+        initial_rows = len(combined_day_data_resampled)
+        combined_day_data_resampled = combined_day_data_resampled[
+            (combined_day_data_resampled.index >= filter_start_dt_et) &
+            (combined_day_data_resampled.index < filter_end_dt_et)
+        ]
+        self.logger.info(f"Filtered daily bars from {initial_rows} to {len(combined_day_data_resampled)} to focus on trading hours ({filter_start_time.strftime('%H:%M')} - {filter_end_time.strftime('%H:%M')} ET).")
+
+        if combined_day_data_resampled.empty:
+            self.logger.warning(f"No data available within the specified trading hours for {current_date.strftime('%Y-%m-%d')}. Skipping day.")
+            return
+
+        # Prime the break detector with the last pre-market candle
+        for symbol in self.symbols:
+            all_symbol_data = self.all_data[symbol]
+            trading_session_data = combined_day_data_resampled[combined_day_data_resampled['symbol'] == symbol]
+            
+            if not trading_session_data.empty:
+                first_candle_timestamp = trading_session_data.index[0]
+                pre_market_candles = all_symbol_data[all_symbol_data.index < first_candle_timestamp]
+                if not pre_market_candles.empty:
+                    last_pre_market_candle = pre_market_candles.iloc[-1]
+                    self.symbol_states[symbol]['break_detector'].previous_bar = last_pre_market_candle
+                    self.logger.info(f"Priming BreakDetector for {symbol} with pre-market candle at {last_pre_market_candle.name.astimezone(et_tz).strftime('%H:%M:%S')} ET")
+
+        # 2. Loop through each 2-minute bar of the day
+        self.logger.info("--- Starting 2-Minute Bar Simulation ---")
+        for timestamp, latest_bar in combined_day_data_resampled.iterrows():
             symbol = latest_bar['symbol']
             state = self.symbol_states[symbol]
             current_state = state['state']
 
-            # Log the current state and time for each minute
-            price_for_log = latest_bar['close']
-            self.logger.info(f"[{fmt_ts(timestamp)}] Symbol: {symbol}, State: {current_state}, Price: {price_for_log:.2f}")
+            # Log the current state and OHLC for each 2-minute candle
+            ohlc_log = (f"O:{latest_bar['open']:.2f}, H:{latest_bar['high']:.2f}, "
+                        f"L:{latest_bar['low']:.2f}, C:{latest_bar['close']:.2f}")
+            self.logger.info(f"[{fmt_ts(timestamp)}] Symbol: {symbol}, State: {current_state}, OHLC: ({ohlc_log})")
 
             # Check if within trading sessions. New trades are only opened during the morning session,
             # but existing trades are managed until the end of the day.
@@ -224,10 +256,9 @@ class BacktesterProjectX:
                         active_levels['pml'] = pml
                 
                 if not active_levels:
-                    support = {k: v for k, v in key_levels.items() if v < current_price}
-                    resist = {k: v for k, v in key_levels.items() if v > current_price}
-                    if support: active_levels[[k for k, v in key_levels.items() if v == max(support.values())][0]] = max(support.values())
-                    if resist: active_levels[[k for k, v in key_levels.items() if v == min(resist.values())][0]] = min(resist.values())
+                    # If not in a PMH/PML channel, consider all levels active for break checks.
+                    # The BreakDetector is responsible for identifying the actual cross.
+                    active_levels = key_levels
                 if not active_levels: 
                     continue
 
@@ -246,7 +277,23 @@ class BacktesterProjectX:
                                 self.balance, entry_price, stop_loss_price, symbol, is_high_conviction=break_event.get('high_conviction', False)
                             )
                             if quantity > 0:
-                                self._open_trade(symbol, state, trade_side, entry_price, stop_loss_price, quantity, latest_bar, pivot_candle, break_event)
+                                # --- Open A+ Trade ---
+                                tp_price = self.take_profit_manager.set_profit_target(entry_price, stop_loss_price, trade_side)
+                                daily_levels = state['levels']
+                                levels_str = f"PDH:{daily_levels.get('pdh', 'N/A')}, PDL:{daily_levels.get('pdl', 'N/A')}, PMH:{daily_levels.get('pmh', 'N/A')}, PML:{daily_levels.get('pml', 'N/A')}"
+
+                                state['active_trade'] = {
+                                    'symbol': symbol, 'entry_time': timestamp, 'entry_price': entry_price,
+                                    'side': trade_side, 'stop_loss': stop_loss_price, 'take_profit': tp_price,
+                                    'quantity': quantity, 'status': 'ACTIVE',
+                                    'levels_info': levels_str,
+                                    'level_broken': break_event['level_name'].upper(),
+                                    'time_at_break': break_event['candle'].name,
+                                    'time_at_retest': 'N/A (A+ Setup)'
+                                }
+                                state['state'] = 'IN_TRADE'
+                                state['daily_trade_status']['trade_taken'] = True
+                                self.logger.info(f"  -> [{fmt_ts(timestamp)}] A+ TRADE OPEN: {trade_side} {quantity} {symbol} @ {entry_price:.2f}, SL: {stop_loss_price:.2f}, TP: {tp_price:.2f}")
                                 continue # Skip to next bar
                             else:
                                 self.logger.info(f"  -> [{fmt_ts(timestamp)}] A+ setup trade aborted due to zero position size. Resetting.")
@@ -298,11 +345,18 @@ class BacktesterProjectX:
                 break_event = retest_context['break_event']
                 break_dir = 'up' if 'up' in break_event['type'] else 'down'
 
+                level_price = break_event['level']
+                rejection_candle = retest_context['rejection_candle']
                 is_confirmed = False
-                if break_dir == 'up' and latest_bar['close'] > latest_bar['open']:
-                    is_confirmed = True
-                elif break_dir == 'down' and latest_bar['close'] < latest_bar['open']:
-                    is_confirmed = True
+
+                if break_dir == 'up':
+                    # Confirmation: Candle holds above the broken level AND closes above the open of the rejection candle.
+                    if latest_bar['low'] > level_price and latest_bar['close'] > rejection_candle['open']:
+                        is_confirmed = True
+                elif break_dir == 'down':
+                    # Confirmation: Candle holds below the broken level AND closes below the open of the rejection candle.
+                    if latest_bar['high'] < level_price and latest_bar['close'] < rejection_candle['open']:
+                        is_confirmed = True
 
                 if is_confirmed:
                     self.logger.info(f"  -> [{fmt_ts(timestamp)}] CONFIRMATION PASSED for {symbol}. Validating trade.")
@@ -383,73 +437,68 @@ class BacktesterProjectX:
                         exit_reason = 'TAKE_PROFIT'
 
                 if exit_price:
-                    pnl = (exit_price - trade['entry_price']) * trade['quantity'] if trade['side'] == 'BUY' else (trade['entry_price'] - exit_price) * trade['quantity']
-                    self.balance += pnl
-                    trade['exit_time'] = timestamp
-                    trade['exit_price'] = exit_price
-                    trade['pnl'] = pnl
-                    trade['status'] = 'CLOSED'
-                    trade['exit_reason'] = exit_reason
-                    self.trades.append(trade)
-                    self.logger.info(f"  -> [{fmt_ts(timestamp)}] TRADE CLOSED: {exit_reason} for {symbol}. PnL: ${pnl:,.2f}. New Balance: ${self.balance:,.2f}")
-                    state['active_trade'] = None
-                    state['state'] = 'AWAITING_BREAK'
-                    state['daily_trade_status']['last_trade_outcome'] = 'win' if pnl > 0 else 'loss'
+                    self._close_trade_and_reset_state(state, trade, latest_bar, exit_reason)
                     continue
 
-    def _open_trade(self, symbol, state, trade_side, entry_price, stop_loss_price, quantity, latest_bar, pivot_candle, break_event):
-        """
-        Opens a new trade, sets state to IN_TRADE, and logs the entry.
-        """
-        take_profit_price = self.take_profit_manager.set_profit_target(entry_price, stop_loss_price, trade_side)
-        
-        daily_levels = state['levels']
-        levels_str = f"PDH:{daily_levels.get('pdh', 'N/A')}, PDL:{daily_levels.get('pdl', 'N/A')}, PMH:{daily_levels.get('pmh', 'N/A')}, PML:{daily_levels.get('pml', 'N/A')}"
+        # --- End of Day Position Management ---
+        for symbol in self.symbols:
+            state = self.symbol_states[symbol]
+            if state['state'] == 'IN_TRADE' and state['active_trade']:
+                trade = state['active_trade']
+                symbol_data = combined_day_data_resampled[combined_day_data_resampled['symbol'] == symbol]
+                if not symbol_data.empty:
+                    last_bar_of_day = symbol_data.iloc[-1]
+                    self._close_trade_and_reset_state(state, trade, last_bar_of_day, 'EOD')
+                    continue
 
-        state['active_trade'] = {
-            'symbol': symbol,
-            'entry_time': latest_bar.name,
-            'entry_price': entry_price,
-            'side': trade_side,
-            'stop_loss': stop_loss_price,
-            'take_profit': take_profit_price,
-            'quantity': quantity,
-            'status': 'ACTIVE',
-            'levels_info': levels_str,
-            'level_broken': break_event['level_name'].upper(),
-            'time_at_break': break_event['candle'].name,
-            'pivot_candle': pivot_candle,
-            'is_immediate_entry': break_event.get('immediate_entry', False)
-        }
-        
-        state['state'] = 'IN_TRADE'
-        state['daily_trade_status']['trade_taken'] = True
-        
-        self.logger.info(f"  -> [{fmt_ts(latest_bar.name)}] TRADE OPEN: {trade_side} {quantity} {symbol} @ {entry_price:.2f}")
-        self.logger.info(f"     - SL: {stop_loss_price:.2f}, TP: {take_profit_price:.2f}, Risk: ${risk_config.RISK_PER_TRADE:.2f}")
 
-    def close_trade(self, state, exit_bar, exit_reason):
-        """Records the result of a closed trade and updates balance."""
-        trade = state['active_trade']
-        exit_price = 0
-        if exit_reason == 'Take Profit':
-            exit_price = trade['take_profit']
-        elif exit_reason == 'Stop Loss':
+    def _close_trade_and_reset_state(self, state, trade, exit_bar, exit_reason):
+        """
+        A unified method to close a trade, calculate PnL correctly, record the trade,
+        log the details, and reset the symbol's state machine.
+        """
+        symbol = trade['symbol']
+        
+        # The exit price is determined by the trigger (SL/TP) or the close of the exit bar.
+        if exit_reason == 'STOP_LOSS':
             exit_price = trade['stop_loss']
-        elif exit_reason == 'EOD':
+        elif exit_reason == 'TAKE_PROFIT':
+            exit_price = trade['take_profit']
+        else: # EOD or other reasons
             exit_price = exit_bar['close']
 
-        pnl = (exit_price - trade['entry_price']) if trade['side'] == 'BUY' else (trade['entry_price'] - exit_price)
-        pnl_dollars = pnl * market_config.DOLLAR_PER_POINT[trade['symbol']] * trade['quantity']
+        # Correctly calculate PnL in points and then in dollars
+        pnl_points = (exit_price - trade['entry_price']) if trade['side'] == 'BUY' else (trade['entry_price'] - exit_price)
+        pnl_dollars = pnl_points * trade['quantity'] * market_config.DOLLAR_PER_POINT[symbol]
+        
+        # Update master balance
         self.balance += pnl_dollars
 
-        result = 'WIN' if pnl_dollars > 0 else 'LOSS'
-        trade.update({'exit_time': exit_bar.name, 'exit_price': exit_price, 'exit_reason': exit_reason, 'status': 'CLOSED', 'pnl_dollars': pnl_dollars, 'result': result})
+        # Update the trade dictionary with all exit details
+        trade.update({
+            'exit_time': exit_bar.name,
+            'exit_price': exit_price,
+            'pnl_points': pnl_points,
+            'pnl_dollars': pnl_dollars,
+            'status': 'CLOSED',
+            'reason_for_exit': exit_reason,
+            'result': 'WIN' if pnl_dollars > 0 else 'LOSS'
+        })
+
+        # Record the completed trade for final statistics
         self.trades.append(trade)
-        state['daily_trade_status']['last_trade_outcome'] = result.lower()
+
+        # Log the closure with comprehensive details
+        self.logger.info(
+            f"  -> [{fmt_ts(exit_bar.name)}] TRADE CLOSED: {trade['side']} {trade['quantity']} {symbol} @ {exit_price:.2f} "
+            f"for PnL ${pnl_dollars:,.2f}. Reason: {exit_reason}. New Balance: ${self.balance:,.2f}"
+        )
+
+        # Reset the state for the symbol to prepare for the next trade
         state['active_trade'] = None
         state['state'] = 'AWAITING_BREAK'
-        self.logger.info(f"     - [{fmt_ts(exit_bar.name)}] Trade Closed: {result} by {exit_reason}. P/L: ${pnl_dollars:,.2f}. New Balance: ${self.balance:,.2f}")
+        state['retest_context'] = None
+        state['break_detector'].reset()
 
     def shutdown(self):
         """Gracefully shuts down the backtester and prints results."""
@@ -531,4 +580,3 @@ if __name__ == '__main__':
         initial_balance=initial_capital
     )
     backtester.run()
-    backtester.shutdown()

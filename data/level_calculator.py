@@ -58,7 +58,7 @@ class LevelCalculator:
 
                 rth_start = pd.Timestamp(date_candidate, tz=et_tz).replace(hour=9, minute=30, second=0)
                 rth_end = pd.Timestamp(date_candidate, tz=et_tz).replace(hour=16, minute=0, second=0)
-                rth_data = day_data[(day_data.index >= rth_start) & (day_data.index <= rth_end)]
+                rth_data = day_data[(day_data.index >= rth_start) & (day_data.index < rth_end)]
                 
                 if not rth_data.empty:
                     valid_rth_data = rth_data[rth_data['low'] > 0]

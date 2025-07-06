@@ -11,7 +11,7 @@ BREAK_CONFIRMATION_CANDLES = 2
 # Defines how close the price must get to a broken level to be considered a valid retest.
 # This value is in points.
 RETEST_TOLERANCE_POINTS = {
-    'MNQ': 15.0, # Wider tolerance for volatile Nasdaq futures
+    'MNQ': 30.0, # Wider tolerance for volatile Nasdaq futures
     'MES': 4.5,  # Tighter tolerance for S&P futures
 }
 
@@ -25,8 +25,15 @@ MIN_BREAKOUT_VOLUME = {
 # Defines the minimum required ratio of the candle's body to its total range (high-low)
 # for it to be considered a 'Conviction Candle'. A higher value means a more decisive candle.
 CONVICTION_CANDLE_BODY_RATIO = {
-    'MNQ': 0.7,  # Requires a strong 70% body
-    'MES': 0.6,  # Slightly more lenient for MES
+    'MNQ': 0.65, # Requires a strong, decisive body
+    'MES': 0.6
+}
+
+# For A+ setups, the maximum distance (in points) the close can be from the broken level.
+# This prevents chasing entries on overly extended, single-candle breakouts.
+MAX_A_PLUS_ENTRY_EXTENSION = {
+    'MNQ': 30.0, # e.g., if break is at 100, close must be <= 130 for a valid A+ long.
+    'MES': 4.0
 }
 
 # The number of minutes to wait for a retest before invalidating the setup.
