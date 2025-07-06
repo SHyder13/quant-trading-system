@@ -285,6 +285,16 @@ class Backtester:
 
                     entry_price = latest_bar['close']
 
+                    # --- Data-Driven Entry Slippage Filter ---
+                    retested_level = break_event['level']
+                    slippage = (entry_price - retested_level) if trade_side == 'BUY' else (retested_level - entry_price)
+
+                    if slippage > strategy_config.MAX_ENTRY_SLIPPAGE_POINTS:
+                        logging.info(f"  -> [{timestamp.time()}] Trade REJECTED for {symbol} due to high slippage. Slippage: {slippage:.2f} > Max: {strategy_config.MAX_ENTRY_SLIPPAGE_POINTS}")
+                        state['state'] = 'AWAITING_BREAK'
+                        state['retest_context'] = None
+                        continue # Skip to next bar
+
                     is_high_conviction = retest_context['confluence_type'] is not None
                     quantity = self.position_sizer.calculate_size(self.balance, entry_price, sl_price, symbol, is_high_conviction)
                     if quantity == 0: 

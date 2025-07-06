@@ -45,6 +45,10 @@ MIN_DISTANCE_FROM_LEVEL = {
     'MNQ': 20.0   # 20 points for MNQ
 }
 
+# Maximum allowable slippage in points for trade entry.
+# Based on analysis, a value of 8.0 is chosen to filter out trades
+# with statistically higher probability of being losses.
+MAX_ENTRY_SLIPPAGE_POINTS = 8.0
 
 # The number of minutes to wait for a retest before invalidating the setup.
 RETEST_TIMEOUT_MINUTES = 60
