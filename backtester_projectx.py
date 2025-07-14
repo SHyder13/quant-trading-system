@@ -23,6 +23,7 @@ from data.level_calculator import LevelCalculator
 from strategy.break_detector import BreakDetector
 from strategy.retest_detector import RetestDetector
 from strategy.pattern_validator import PatternValidator
+from strategy.trading_logic import TradingLogic
 
 from risk.position_sizer import PositionSizer
 from risk.stop_loss_manager import StopLossManager
@@ -59,12 +60,14 @@ class BacktesterProjectX:
         self.symbol_states = {}
         for symbol in self.symbols:
             self.symbol_states[symbol] = {
-                'state': 'AWAITING_BREAK',
-                'break_detector': BreakDetector(strategy_config, symbol, logger=self.logger),
-                'retest_detector': RetestDetector(strategy_config, symbol, logger=self.logger),
-                'pattern_validator': PatternValidator(logger=self.logger),
-                'last_break_event': None,
-                'retest_context': None,
+                'logic': TradingLogic(
+                    symbol=symbol,
+                    break_detector=BreakDetector(strategy_config, symbol, self.logger),
+                    retest_detector=RetestDetector(strategy_config, symbol),
+                    pattern_validator=PatternValidator(logger=self.logger),
+                    stop_loss_manager=self.stop_loss_manager,
+                    take_profit_manager=self.take_profit_manager
+                ),
                 'active_trade': None,
                 'levels': {},
                 'daily_trade_status': {'trade_taken': False, 'last_trade_outcome': None}
@@ -83,11 +86,14 @@ class BacktesterProjectX:
             # Fetch data from one day prior to calculate levels correctly
             fetch_start_date = self.start_date - timedelta(days=1)
             
+
+            
             data = self.broker.get_historical_bars(
                 symbol,
                 start_time=fetch_start_date,
                 end_time=self.end_date + timedelta(days=1), # Fetch until the end of the target day
-                timeframe_minutes=int(main_config.TIMEFRAME.replace('m', ''))
+                timeframe=main_config.TIMEFRAME,
+                limit=20000 # Increased limit for multi-day fetch
             )
             if data is None or data.empty:
                 self.logger.info(f"Could not fetch data for {symbol} from ProjectX API. Aborting.")
@@ -111,9 +117,8 @@ class BacktesterProjectX:
         daily_data_frames = []
         for symbol in self.symbols:
             self.symbol_states[symbol]['daily_trade_status'] = {'trade_taken': False, 'last_trade_outcome': None}
-            self.symbol_states[symbol]['state'] = 'AWAITING_BREAK'
+            self.symbol_states[symbol]['logic'].reset_state()
             self.symbol_states[symbol]['active_trade'] = None
-            self.symbol_states[symbol]['break_detector'].reset()
 
             et_tz = pytz.timezone('America/New_York')
             simulation_day_in_et = pd.Timestamp(current_date, tz=et_tz)
@@ -210,7 +215,7 @@ class BacktesterProjectX:
                 pre_market_candles = all_symbol_data[all_symbol_data.index < first_candle_timestamp]
                 if not pre_market_candles.empty:
                     last_pre_market_candle = pre_market_candles.iloc[-1]
-                    self.symbol_states[symbol]['break_detector'].previous_bar = last_pre_market_candle
+                    self.symbol_states[symbol]['logic'].break_detector.previous_bar = last_pre_market_candle
                     self.logger.info(f"Priming BreakDetector for {symbol} with pre-market candle at {last_pre_market_candle.name.astimezone(et_tz).strftime('%H:%M:%S')} ET")
 
         # 2. Loop through each 2-minute bar of the day
@@ -218,28 +223,27 @@ class BacktesterProjectX:
         for timestamp, latest_bar in combined_day_data_resampled.iterrows():
             symbol = latest_bar['symbol']
             state = self.symbol_states[symbol]
-            current_state = state['state']
+            logic_instance = state['logic']
 
             # Log the current state and OHLC for each 2-minute candle
             ohlc_log = (f"O:{latest_bar['open']:.2f}, H:{latest_bar['high']:.2f}, "
                         f"L:{latest_bar['low']:.2f}, C:{latest_bar['close']:.2f}")
-            self.logger.info(f"[{fmt_ts(timestamp)}] Symbol: {symbol}, State: {current_state}, OHLC: ({ohlc_log})")
+            self.logger.info(f"[{fmt_ts(timestamp)}] Symbol: {symbol}, State: {logic_instance.state}, OHLC: ({ohlc_log})")
 
-            # Check if within trading sessions. New trades are only opened during the morning session,
-            # but existing trades are managed until the end of the day.
+            # Manage active trade (check for SL/TP)
+            if logic_instance.state == 'IN_TRADE' and state['active_trade']:
+                # (This logic is assumed to be present after the snippet and remains unchanged)
+                pass
+
+            # Check if within trading sessions for new trades
             current_time_et = timestamp.astimezone(pytz.timezone('America/New_York')).time()
             is_morning_session = self.morning_start <= current_time_et <= self.morning_end
 
-            # If we are not in a trade, we can only look for new setups during the morning session.
-            # If we are already in a trade, we continue processing to manage the position.
-            if current_state != 'IN_TRADE' and not is_morning_session:
+            if logic_instance.state != 'IN_TRADE' and not is_morning_session:
                 continue
-            
-            # This variable is used for logic that might be session-specific in the future.
-            current_session = 'morning' if is_morning_session else 'afternoon'
 
-            # --- STATE MACHINE LOGIC ---
-            if current_state == 'AWAITING_BREAK':
+            # --- UNIFIED STRATEGY LOGIC ---
+            if logic_instance.state != 'IN_TRADE':
                 key_levels = {k: v for k, v in state['levels'].items() if v is not None}
                 current_price = latest_bar['close']
                 active_levels = {}
@@ -256,162 +260,53 @@ class BacktesterProjectX:
                         active_levels['pml'] = pml
                 
                 if not active_levels:
-                    # If not in a PMH/PML channel, consider all levels active for break checks.
-                    # The BreakDetector is responsible for identifying the actual cross.
                     active_levels = key_levels
+                
                 if not active_levels: 
                     continue
 
-                break_event = state['break_detector'].check_for_break(latest_bar, active_levels)
-                if break_event:
-                    # --- Immediate Entry for A+ Setups ---
-                    if break_event.get('immediate_entry'):
-                        self.logger.info(f"  -> [{fmt_ts(timestamp)}] SINGLE-CANDLE A+ SETUP DETECTED. Proceeding directly to trade validation.")
-                        trade_side = 'BUY' if break_event['type'] == 'up' else 'SELL'
-                        pivot_candle = break_event['candle']
-                        stop_loss_price = self.stop_loss_manager.calculate_stop_from_candle(trade_side, pivot_candle, symbol)
-                        
-                        if stop_loss_price:
-                            entry_price = latest_bar['close']
-                            quantity = self.position_sizer.calculate_size(
-                                self.balance, entry_price, stop_loss_price, symbol, is_high_conviction=break_event.get('high_conviction', False)
-                            )
-                            if quantity > 0:
-                                # --- Open A+ Trade ---
-                                tp_price = self.take_profit_manager.set_profit_target(entry_price, stop_loss_price, trade_side)
-                                daily_levels = state['levels']
-                                levels_str = f"PDH:{daily_levels.get('pdh', 'N/A')}, PDL:{daily_levels.get('pdl', 'N/A')}, PMH:{daily_levels.get('pmh', 'N/A')}, PML:{daily_levels.get('pml', 'N/A')}"
+                # Delegate to the TradingLogic class
+                trade_signal = logic_instance.process_bar(latest_bar, active_levels)
 
-                                state['active_trade'] = {
-                                    'symbol': symbol, 'entry_time': timestamp, 'entry_price': entry_price,
-                                    'side': trade_side, 'stop_loss': stop_loss_price, 'take_profit': tp_price,
-                                    'quantity': quantity, 'status': 'ACTIVE',
-                                    'levels_info': levels_str,
-                                    'level_broken': break_event['level_name'].upper(),
-                                    'time_at_break': break_event['candle'].name,
-                                    'time_at_retest': 'N/A (A+ Setup)'
-                                }
-                                state['state'] = 'IN_TRADE'
-                                state['daily_trade_status']['trade_taken'] = True
-                                self.logger.info(f"  -> [{fmt_ts(timestamp)}] A+ TRADE OPEN: {trade_side} {quantity} {symbol} @ {entry_price:.2f}, SL: {stop_loss_price:.2f}, TP: {tp_price:.2f}")
-                                continue # Skip to next bar
-                            else:
-                                self.logger.info(f"  -> [{fmt_ts(timestamp)}] A+ setup trade aborted due to zero position size. Resetting.")
-                        else:
-                            self.logger.info(f"  -> [{fmt_ts(timestamp)}] A+ setup trade aborted due to stop-loss calculation error. Resetting.")
-                        
-                        state['state'] = 'AWAITING_BREAK' # Reset whether trade was taken or not
-                        state['retest_detector'].reset()
-                        state['break_detector'].reset()
-                        continue # Move to the next bar
-
-                    # --- Standard Multi-Candle Break Logic ---
-                    self.logger.info(f"  >>> BREAK_EVENT {symbol} {fmt_ts(timestamp)}: O={latest_bar['open']:.2f} H={latest_bar['high']:.2f} L={latest_bar['low']:.2f} C={latest_bar['close']:.2f} vs {break_event['level_name'].upper()} {break_event['level_value']:.2f}")
-                    name = break_event['level_name'].upper()
-                    level_price = break_event['level_value']
-                    state['state'] = 'AWAITING_RETEST'
-                    state['last_break_event'] = {**break_event, 'level': level_price, 'name': name}
-                    state['retest_timeout_stamp'] = timestamp + timedelta(minutes=strategy_config.RETEST_TIMEOUT_MINUTES)
-                    continue
-
-            elif current_state == 'AWAITING_RETEST':
-                if timestamp > state['retest_timeout_stamp']:
-                    self.logger.info(f"  -> [{timestamp.time()}] TIMEOUT: Retest for {symbol} timed out. Resetting.")
-                    state['state'] = 'AWAITING_BREAK'
-                    continue
-
-                break_event = state['last_break_event']
-                break_dir = 'up' if 'up' in break_event['type'] else 'down'
-                pivot, reject, conf_type = state['retest_detector'].check_for_retest(latest_bar, break_event['level'], break_dir)
-
-                if pivot is not None and reject is not None:
-                    self.logger.info(f"  -> [{fmt_ts(timestamp)}] RETEST DETECTED on {symbol} at {break_event['level']:.2f}. Waiting for confirmation candle.")
-                    state['state'] = 'AWAITING_CONFIRMATION'
-                    state['retest_context'] = {
-                        'break_event': break_event,
-                        'pivot_candle': pivot,
-                        'rejection_candle': reject,
-                        'confluence_type': conf_type
-                    }
-                    continue
-
-            elif current_state == 'AWAITING_CONFIRMATION':
-                if not state.get('retest_context'):
-                    self.logger.info(f"  -> [{timestamp.time()}] CRITICAL ERROR: In AWAITING_CONFIRMATION with no context. Resetting.")
-                    state['state'] = 'AWAITING_BREAK'
-                    continue
-
-                retest_context = state['retest_context']
-                break_event = retest_context['break_event']
-                break_dir = 'up' if 'up' in break_event['type'] else 'down'
-
-                level_price = break_event['level']
-                rejection_candle = retest_context['rejection_candle']
-                is_confirmed = False
-
-                if break_dir == 'up':
-                    # Confirmation: Candle holds above the broken level AND closes above the open of the rejection candle.
-                    if latest_bar['low'] > level_price and latest_bar['close'] > rejection_candle['open']:
-                        is_confirmed = True
-                elif break_dir == 'down':
-                    # Confirmation: Candle holds below the broken level AND closes below the open of the rejection candle.
-                    if latest_bar['high'] < level_price and latest_bar['close'] < rejection_candle['open']:
-                        is_confirmed = True
-
-                if is_confirmed:
-                    self.logger.info(f"  -> [{fmt_ts(timestamp)}] CONFIRMATION PASSED for {symbol}. Validating trade.")
-                    trade_side = 'BUY' if break_dir == 'up' else 'SELL'
-                    context = {
-                        'breakout_candle': break_event['candle'],
-                        'pivot_candle': retest_context['pivot_candle'],
-                        'rejection_candle': retest_context['rejection_candle'],
-                        'symbol': symbol,
-                        'latest_bar': latest_bar,
-                        'level_broken': break_event['level']
-                    }
-
-                    is_valid, reason = state['pattern_validator'].validate_signal(trade_side, context)
-                    if not is_valid:
-                        self.logger.info(f"  -> [{timestamp.time()}] Post-confirmation validation failed: {reason}. Resetting.")
-                        state['state'] = 'AWAITING_BREAK'
-                        state['retest_context'] = None
+                if trade_signal:
+                    # --- Slippage Filter ---
+                    slippage = abs(trade_signal['entry_price'] - trade_signal['level_broken'])
+                    if slippage > strategy_config.MAX_ENTRY_SLIPPAGE_POINTS:
+                        self.logger.info(f"Trade for {symbol} rejected due to high slippage: {slippage:.2f}")
+                        logic_instance.reset_state()
                         continue
 
-                    sl_price = self.stop_loss_manager.calculate_stop_from_candle(trade_side, retest_context['pivot_candle'], symbol)
-                    if not sl_price: 
-                        state['state'] = 'AWAITING_BREAK'; state['retest_context'] = None; continue
+                    # --- Position Sizing ---
+                    quantity = self.position_sizer.calculate_size(
+                        self.balance, 
+                        trade_signal['entry_price'], 
+                        trade_signal['stop_loss'], 
+                        symbol, 
+                        is_high_conviction=False # TODO: Add conviction to signal
+                    )
 
-                    entry_price = latest_bar['close']
-                    is_high_conviction = retest_context['confluence_type'] is not None
-                    quantity = self.position_sizer.calculate_size(self.balance, entry_price, sl_price, symbol, is_high_conviction)
-                    if quantity == 0: 
-                        state['state'] = 'AWAITING_BREAK'; state['retest_context'] = None; continue
+                    if quantity > 0:
+                        tp_price = self.take_profit_manager.set_profit_target(
+                            trade_signal['entry_price'], trade_signal['stop_loss'], trade_signal['trade_direction']
+                        )
+                        daily_levels = state['levels']
+                        levels_str = f"PDH:{daily_levels.get('pdh', 'N/A')}, PDL:{daily_levels.get('pdl', 'N/A')}, PMH:{daily_levels.get('pmh', 'N/A')}, PML:{daily_levels.get('pml', 'N/A')}"
 
-                    tp_price = self.take_profit_manager.set_profit_target(entry_price, sl_price, trade_side)
-                    daily_levels = state['levels']
-                    levels_str = f"PDH:{daily_levels.get('pdh', 'N/A')}, PDL:{daily_levels.get('pdl', 'N/A')}, PMH:{daily_levels.get('pmh', 'N/A')}, PML:{daily_levels.get('pml', 'N/A')}"
-
-                    state['active_trade'] = {
-                        'symbol': symbol, 'entry_time': timestamp, 'entry_price': entry_price,
-                        'side': trade_side, 'stop_loss': sl_price, 'take_profit': tp_price,
-                        'quantity': quantity, 'status': 'ACTIVE',
-                        'levels_info': levels_str,
-                        'level_broken': break_event['name'],
-                        'time_at_break': break_event['candle'].name,
-                        'time_at_retest': retest_context['rejection_candle'].name
-                    }
-                    state['state'] = 'IN_TRADE'
-                    state['daily_trade_status']['trade_taken'] = True
-                    self.logger.info(f"  -> [{fmt_ts(timestamp)}] TRADE OPEN: {trade_side} {quantity} {symbol} @ {entry_price:.2f}")
-                    continue
-                else:
-                    self.logger.info(f"  -> [{timestamp.time()}] Confirmation FAILED for {symbol}. Resetting.")
-                    state['state'] = 'AWAITING_BREAK'
-                    continue
-                
-                state['retest_context'] = None
-
-            elif current_state == 'IN_TRADE':
+                        state['active_trade'] = {
+                            'symbol': symbol, 'entry_time': timestamp, 'entry_price': trade_signal['entry_price'],
+                            'side': trade_signal['trade_direction'], 'stop_loss': trade_signal['stop_loss'], 'take_profit': tp_price,
+                            'quantity': quantity, 'status': 'ACTIVE',
+                            'levels_info': levels_str,
+                            'level_broken': trade_signal.get('level_broken', 'N/A'),
+                            'time_at_break': trade_signal['break_bar'].name,
+                            'time_at_retest': trade_signal['entry_bar'].name
+                        }
+                        state['daily_trade_status']['trade_taken'] = True
+                        self.logger.info(f"  -> [{fmt_ts(timestamp)}] TRADE OPEN: {trade_signal['trade_direction']} {quantity} {symbol} @ {trade_signal['entry_price']:.2f}, SL: {trade_signal['stop_loss']:.2f}, TP: {tp_price:.2f}")
+                    else:
+                        self.logger.info(f"Trade for {symbol} aborted due to zero position size. Resetting.")
+                        logic_instance.reset_state()
+            elif logic_instance.state == 'IN_TRADE':
                 trade = state['active_trade']
                 if not trade: continue
 
@@ -443,7 +338,7 @@ class BacktesterProjectX:
         # --- End of Day Position Management ---
         for symbol in self.symbols:
             state = self.symbol_states[symbol]
-            if state['state'] == 'IN_TRADE' and state['active_trade']:
+            if state['logic'].state == 'IN_TRADE' and state['active_trade']:
                 trade = state['active_trade']
                 symbol_data = combined_day_data_resampled[combined_day_data_resampled['symbol'] == symbol]
                 if not symbol_data.empty:
@@ -496,9 +391,7 @@ class BacktesterProjectX:
 
         # Reset the state for the symbol to prepare for the next trade
         state['active_trade'] = None
-        state['state'] = 'AWAITING_BREAK'
-        state['retest_context'] = None
-        state['break_detector'].reset()
+        state['logic'].reset_state()
 
     def shutdown(self):
         """Gracefully shuts down the backtester and prints results."""
@@ -569,7 +462,7 @@ if __name__ == '__main__':
     # We want to analyze the trade from July 1st, 2025
     start_date = datetime(2025, 6, 30)
     end_date = datetime(2025, 7, 3)
-    symbols_to_test = ['MNQ']
+    symbols_to_test = ['MNQ', 'MES']
     initial_capital = 2000.0
 
     # --- Run the backtest ---

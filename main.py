@@ -19,19 +19,42 @@ from data.bar_aggregator import BarAggregator
 
 # Core Application Logic Components
 from execution.broker_interface import BrokerInterface
-from data.market_data_fetcher import MarketDataFetcher # Still needed for initial level calculation
+
 from data.level_calculator import LevelCalculator
 from data.session_manager import SessionManager
 from strategy.level_detector import LevelDetector
 from strategy.break_detector import BreakDetector
 from strategy.retest_detector import RetestDetector
 from strategy.pattern_validator import PatternValidator
+from strategy.trading_logic import TradingLogic
 from risk.stop_loss_manager import StopLossManager
 from execution.order_manager import OrderManager
 from monitoring.logger import Logger
 
 class TradingSystem:
     """ Encapsulates the entire trading system, running on an event-driven architecture. """
+    def resolve_all_contracts(self):
+        """Uses the broker interface to resolve contract IDs for all symbols in the trading universe."""
+        self.logger.info("--- Resolving contracts for all symbols ---")
+        pruned_symbols = []
+        for symbol in self.trading_universe:
+            self.logger.info(f"Resolving contract for {symbol}...")
+            # The broker interface now handles fetching and caching contract details
+            # We just need to call it to ensure the details are loaded.
+            details = self.broker_interface.get_contract_details(symbol)
+            if details and details.get('id'):
+                # The broker interface caches the full details. We can update our local map if needed.
+                market_config.SYMBOL_MAP[symbol]['contract_id'] = details.get('id')
+                self.logger.info(f"Successfully resolved {symbol} to contract ID: {details.get('id')}")
+            else:
+                self.logger.error(f"Contract resolution failed for {symbol}. Removing from trading universe.")
+                pruned_symbols.append(symbol)
+
+        # Prune any symbols that failed to resolve
+        for symbol in pruned_symbols:
+            self.trading_universe.remove(symbol)
+            del self.symbol_states[symbol]
+
     def __init__(self):
         self.logger = Logger()
         self.logger.info("Initializing trading system...")
@@ -47,34 +70,42 @@ class TradingSystem:
             return
         self.logger.info("--- System is Live: Authenticated with API ---")
 
-        # --- Initialize Core Components ---
-        self.market_fetcher = MarketDataFetcher(session_token=self.broker_interface.session_token)
+        # --- 2. Initialize Core Components ---
         self.level_detector = LevelDetector(LevelCalculator())
         self.session_manager = SessionManager(market_config, strategy_config)
-        self.pattern_validator = PatternValidator()
         self.stop_loss_manager = StopLossManager(risk_config)
         self.order_manager = OrderManager(self.broker_interface, self.broker_interface.get_account_balance())
-
-        # --- 2. Real-Time and Event-Driven Setup ---
-        self.realtime_manager = RealtimeManager(self.broker_interface.session_token, self.broker_interface.account_id)
-        self.bar_aggregator = BarAggregator(timeframe_minutes=main_config.TIMEFRAME_MINUTES)
-        event_bus.subscribe("NEW_BAR_CLOSED", self._on_new_bar)
-        event_bus.subscribe("GATEWAY_ORDER_UPDATE", self._on_order_update)
 
         # --- 3. Per-Symbol State Initialization ---
         self.trading_universe = list(strategy_config.TRADABLE_SYMBOLS)
         self.symbol_states = {}
         self.levels_by_symbol = {}
+        pattern_validator = PatternValidator() # Stateless, so one instance is fine
+
         for symbol in self.trading_universe:
+            # Each symbol gets its own instance of the trading logic engine
             self.symbol_states[symbol] = {
-                'state': 'INITIALIZING',
-                'break_detector': BreakDetector(strategy_config, symbol),
-                'retest_detector': RetestDetector(strategy_config, symbol),
-                'last_break_event': None,
+                'logic': TradingLogic(
+                    symbol=symbol,
+                    break_detector=BreakDetector(strategy_config, symbol, self.logger),
+                    retest_detector=RetestDetector(strategy_config, symbol),
+                    pattern_validator=pattern_validator,
+                    stop_loss_manager=self.stop_loss_manager,
+                    take_profit_manager=self.take_profit_manager
+                ),
                 'active_trade': None,
                 'daily_trade_status': {'trade_taken': False, 'last_trade_outcome': None}
             }
-            self.logger.info(f"  - {symbol} initialized. State: INITIALIZING")
+            self.logger.info(f"  - {symbol} initialized with its own logic engine.")
+
+        # --- 4. Dynamic Contract Resolution & Validation ---
+        self.resolve_all_contracts()
+
+        # --- 5. Real-Time and Event-Driven Setup ---
+        self.realtime_manager = RealtimeManager(self.broker_interface.session_token, self.broker_interface.account_id)
+        self.bar_aggregator = BarAggregator(timeframe_minutes=main_config.TIMEFRAME_MINUTES)
+        event_bus.subscribe("NEW_BAR_CLOSED", self._on_new_bar)
+        event_bus.subscribe("GATEWAY_ORDER_UPDATE", self._on_order_update)
         self.last_reset_date = None
 
     def start(self):
@@ -107,12 +138,13 @@ class TradingSystem:
                 self.trading_universe.remove(symbol)
                 continue
 
-            historical_data = self.market_fetcher.fetch_ohlcv(symbol, main_config.TIMEFRAME, limit=3000)
+            # Use the broker interface directly, which handles caching and uses the correct contract ID internally
+            historical_data = self.broker_interface.get_historical_bars(symbol, main_config.TIMEFRAME, 3000)
             if historical_data is not None and not historical_data.empty:
                 levels = self.level_detector.update_levels(historical_data)
                 self.levels_by_symbol[symbol] = levels
-                self.symbol_states[symbol]['state'] = 'AWAITING_BREAK'
-                self.logger.info(f"Levels for {symbol} calculated. State -> AWAITING_BREAK")
+                # The TradingLogic instance initializes in 'AWAITING_BREAK' state by default.
+                self.logger.info(f"Levels for {symbol} calculated. Logic engine is active and AWAITING_BREAK.")
                 # Once levels are ready, subscribe to live data
                 self.realtime_manager.subscribe_to_market_data(contract_id)
             else:
@@ -136,6 +168,7 @@ class TradingSystem:
             self.last_reset_date = today_date
 
         if not self.session_manager.is_within_trading_hours(now_et):
+            self.logger.info(f"Outside trading hours ({now_et.strftime('%H:%M:%S ET')}). Pausing strategy logic.")
             return
 
         current_session = self.session_manager.get_current_session(now_et)
@@ -148,105 +181,111 @@ class TradingSystem:
         
         latest_bar = pd.Series(bar)
         current_price = latest_bar['close']
-        current_state = self.symbol_states[symbol]['state']
+        logic_instance = self.symbol_states[symbol]['logic']
         key_levels = self.levels_by_symbol.get(symbol)
 
         if not key_levels or not any(key_levels.values()):
             return
 
-        # --- STATE: AWAITING_BREAK ---
-        if current_state == 'AWAITING_BREAK':
-            support_levels = {k: v for k, v in key_levels.items() if v < current_price}
-            resistance_levels = {k: v for k, v in key_levels.items() if v > current_price}
-            closest_support = max(support_levels.values()) if support_levels else None
-            closest_resistance = min(resistance_levels.values()) if resistance_levels else None
-            
-            active_levels = {}
-            if closest_support:
-                support_key = [k for k, v in key_levels.items() if v == closest_support][0]
-                active_levels[support_key] = closest_support
-            if closest_resistance:
-                resistance_key = [k for k, v in key_levels.items() if v == closest_resistance][0]
-                active_levels[resistance_key] = closest_resistance
+        # Determine active levels to watch
+        support_levels = {k: v for k, v in key_levels.items() if v < current_price}
+        resistance_levels = {k: v for k, v in key_levels.items() if v > current_price}
+        closest_support = max(support_levels.values()) if support_levels else None
+        closest_resistance = min(resistance_levels.values()) if resistance_levels else None
+        active_levels = {}
+        if closest_support:
+            support_key = [k for k, v in key_levels.items() if v == closest_support][0]
+            active_levels[support_key] = closest_support
+        if closest_resistance:
+            resistance_key = [k for k, v in key_levels.items() if v == closest_resistance][0]
+            active_levels[resistance_key] = closest_resistance
 
-            if not active_levels:
+        # --- Unified Strategy Logic ---
+        trade_signal = logic_instance.process_bar(latest_bar, active_levels)
+
+        if trade_signal and not self.symbol_states[symbol].get('active_trade'):
+            self.logger.info(f"Trade signal received for {symbol}: {trade_signal['trade_direction']} at {trade_signal['entry_price']}")
+
+            # Place the trade via the order manager
+            order_result = self.order_manager.place_trade(
+                symbol=symbol,
+                trade_direction=trade_signal['trade_direction'],
+                entry_price=trade_signal['entry_price'],
+                stop_loss=trade_signal['stop_loss'],
+                take_profit=trade_signal['take_profit'],
+                trade_details=trade_signal['trade_details']
+            )
+
+            if order_result and order_result.get('status') == 'Filled':
+                self.logger.info(f"Successfully placed and filled trade for {symbol}.")
+                self.symbol_states[symbol]['active_trade'] = order_result
+                self.symbol_states[symbol]['daily_trade_status']['trade_taken'] = True
+            else:
+                self.logger.error(f"Failed to place trade for {symbol}. Reason: {order_result.get('reason') if order_result else 'Unknown'}")
+                logic_instance.reset() # Reset logic if trade fails
+
+    def _on_order_update(self, order_update: dict):
+        """ Handles updates for open orders (e.g., stop loss, take profit). """
+        symbol = order_update.get('symbol')
+        if not symbol or symbol not in self.symbol_states:
+            return
+
+        state = self.symbol_states[symbol]
+        active_trade = state.get('active_trade')
+
+        if not active_trade or active_trade['order_id'] != order_update.get('order_id'):
+            return
+
+        status = order_update.get('status')
+        if status in ['Filled', 'Cancelled']:
+            self.logger.info(f"Trade for {symbol} closed. Status: {status}")
+            
+            # Update daily trade outcome
+            if status == 'Filled':
+                # Assuming the update contains P/L info or we can derive it
+                pnl = order_update.get('pnl', 0)
+                outcome = 'win' if pnl > 0 else 'loss'
+                state['daily_trade_status']['last_trade_outcome'] = outcome
+                self.logger.info(f"Trade outcome for {symbol}: {outcome.upper()} (P/L: {pnl})")
+
+            # Reset state for the next opportunity
+            state['active_trade'] = None
+            state['logic'].reset()
+            self.logger.info(f"{symbol} state has been reset. Awaiting next break.")
+            return
+
+        # --- Delegate to the TradingLogic class ---
+        trade_signal = logic_instance.process_bar(latest_bar, active_levels)
+
+        if trade_signal:
+            # --- Entry Slippage Filter ---
+            slippage = abs(trade_signal['entry_price'] - trade_signal['level_broken'])
+            if slippage > strategy_config.MAX_ENTRY_SLIPPAGE_POINTS:
+                self.logger.info(f"Trade rejected due to high slippage: {slippage:.2f} > {strategy_config.MAX_ENTRY_SLIPPAGE_POINTS}")
+                logic_instance.reset_state() # Reset state after slippage fail
                 return
-            
-            self.logger.info(f"[{symbol}] Watching active levels: {active_levels}")
 
-            break_event = self.symbol_states[symbol]['break_detector'].check_for_break(latest_bar, active_levels)
-            if break_event:
-                broken_level_name = [name for name, price in active_levels.items() if price == break_event['level']][0].upper()
-                self.logger.info(f"*** BREAK DETECTED: {symbol} broke {broken_level_name} at {break_event['level']:.2f} ***")
-                self.logger.info(f"STATE CHANGE: {symbol} -> AWAITING_RETEST of {broken_level_name}")
-                self.symbol_states[symbol]['state'] = 'AWAITING_RETEST'
-                self.symbol_states[symbol]['last_break_event'] = {**break_event, 'name': broken_level_name}
-                self.symbol_states[symbol]['retest_timeout_start'] = time.time()
+            order_id, quantity = self.order_manager.execute_trade(
+                symbol=symbol,
+                side=trade_signal['trade_direction'],
+                entry_price=trade_signal['entry_price'],
+                stop_loss_price=trade_signal['stop_loss'],
+                is_high_conviction=False # TODO: Add conviction level to signal
+            )
 
-        # --- STATE: AWAITING_RETEST ---
-        elif current_state == 'AWAITING_RETEST':
-            timeout_start = self.symbol_states[symbol].get('retest_timeout_start', 0)
-            if time.time() - timeout_start > strategy_config.RETEST_TIMEOUT_MINUTES * 60:
-                self.logger.info(f"Retest for {symbol} timed out. Resetting to AWAITING_BREAK.")
-                self.symbol_states[symbol]['state'] = 'AWAITING_BREAK'
-                return
-
-            break_event = self.symbol_states[symbol]['last_break_event']
-            break_direction = 'up' if 'up' in break_event['type'] else 'down'
-            
-            pivot_candle, rejection_candle, confluence_type = self.symbol_states[symbol]['retest_detector'].check_for_retest(latest_bar, break_event['level'], break_direction)
-
-            if pivot_candle is not None and rejection_candle is not None:
-                level_name = break_event.get('name', 'level')
-                level_price = break_event['level']
-                self.logger.info(f"*** TRADE SIGNAL: Confirmed retest of {level_name} at {level_price:.2f} for {symbol}! ***")
-                trade_side = 'BUY' if break_direction == 'up' else 'SELL'
-
-                self.logger.info("--- Running Signal Validation ---")
-                validation_context = {
-                    'breakout_candle': break_event['candle'],
-                    'pivot_candle': pivot_candle,
-                    'rejection_candle': rejection_candle,
-                    'symbol': symbol,
-                    'latest_bar': latest_bar,
-                    'levels': self.daily_levels[symbol]
+            if order_id:
+                self.logger.success(f"Trade executed for {symbol}. Now monitoring.")
+                self.symbol_states[symbol]['active_trade'] = {
+                    'order_id': order_id,
+                    'side': trade_signal['trade_direction'],
+                    'quantity': quantity,
+                    'entry_price': trade_signal['entry_price'],
+                    'status': 'ACTIVE'
                 }
-
-                is_valid_signal = self.pattern_validator.validate_signal(trade_side, validation_context)
-                if not is_valid_signal:
-                    self.symbol_states[symbol]['state'] = 'AWAITING_BREAK'
-                    return
-        
-                is_high_conviction = confluence_type is not None
-
-                stop_loss_price = self.stop_loss_manager.calculate_stop_from_candle(trade_side, pivot_candle, symbol)
-                if not stop_loss_price:
-                    self.logger.warning("Could not calculate stop loss. Aborting trade.")
-                    self.symbol_states[symbol]['state'] = 'AWAITING_BREAK'
-                    return
-
-                order_id, quantity = self.order_manager.execute_trade(
-                    symbol=symbol,
-                    side=trade_side,
-                    entry_price=current_price,
-                    stop_loss_price=stop_loss_price,
-                    is_high_conviction=is_high_conviction
-                )
-
-                if order_id:
-                    self.logger.info(f"Trade executed for {symbol}. Now monitoring.")
-                    self.symbol_states[symbol]['state'] = 'IN_TRADE'
-                    self.symbol_states[symbol]['active_trade'] = {
-                        'order_id': order_id,
-                        'side': trade_side,
-                        'quantity': quantity,
-                        'entry_price': current_price,
-                        'status': 'ACTIVE'
-                    }
-                    self.symbol_states[symbol]['daily_trade_status']['trade_taken'] = True
-                else:
-                    self.logger.warning(f"Trade execution failed for {symbol}. Resetting state.")
-                    self.symbol_states[symbol]['state'] = 'AWAITING_BREAK'
+                self.symbol_states[symbol]['daily_trade_status']['trade_taken'] = True
+            else:
+                self.logger.warning(f"Trade execution failed for {symbol}. Resetting logic state.")
+                logic_instance.reset_state()
 
     def _on_order_update(self, order_data: dict):
         """ Handles real-time updates about orders from the gateway. """
@@ -291,13 +330,13 @@ class TradingSystem:
                     self.symbol_states[target_symbol]['daily_trade_status']['last_trade_outcome'] = outcome
                     
                     # Reset state for the symbol
-                    self.logger.info(f"Resetting state for {target_symbol} to AWAITING_BREAK.")
-                    self.symbol_states[target_symbol]['state'] = 'AWAITING_BREAK'
+                    self.logger.info(f"Resetting logic state for {target_symbol}.")
+                    self.symbol_states[target_symbol]['logic'].reset_state()
                     self.symbol_states[target_symbol]['active_trade'] = None
 
                 elif status in ['CANCELLED', 'REJECTED']:
-                    self.logger.warning(f"Order {order_id} for {target_symbol} was {status}. Resetting state.")
-                    self.symbol_states[target_symbol]['state'] = 'AWAITING_BREAK'
+                    self.logger.warning(f"Order {order_id} for {target_symbol} was {status}. Resetting logic state.")
+                    self.symbol_states[target_symbol]['logic'].reset_state()
                     self.symbol_states[target_symbol]['active_trade'] = None
 
         except Exception as e:
@@ -305,9 +344,10 @@ class TradingSystem:
 
 
 def main():
-    system = TradingSystem()
-    if system.broker_interface.session_token:
-        system.start()
+    """Initializes and runs the trading system."""
+    trading_system = TradingSystem()
+    if trading_system.broker_interface.session_token:
+        trading_system.start()
 
 if __name__ == "__main__":
     main()
